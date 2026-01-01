@@ -69,29 +69,11 @@ app.MapPost("/hmx/get-apis", async (HttpContext ctx) =>
             }
         }
 
-        // ---- always include app + features with min_version
-        var features = new JsonObject();
-        foreach (var api in apis.AsObject())
-        {
-            bool enabled = user[api.Key]?.GetValue<bool>() == true;
-            features[api.Key] = new JsonObject
-            {
-                ["enabled"] = enabled,
-                ["min_version"] = api.Value?["min_version"]?.GetValue<string>() ?? "1"
-            };
-        }
-
         return Results.Json(new
         {
             success = true,
             ttl = 30,
-            apis = encryptedApis,
-            app = new
-            {
-                features,
-                version = "1.2"
-            },
-            server_time = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            apis = encryptedApis
         });
     }
     catch (Exception ex)
@@ -103,36 +85,6 @@ app.MapPost("/hmx/get-apis", async (HttpContext ctx) =>
         }, statusCode: 500);
     }
 });
-
-// ======================================================
-// BACKGROUND CLEANUP TASK
-// ======================================================
-var timer = new System.Threading.Timer(async _ =>
-{
-    try
-    {
-        var sessions = await GetJson($"{firebaseDb}/sessions.json");
-        if (sessions == null) return;
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        foreach (var kv in sessions.AsObject())
-        {
-            var expiresNode = kv.Value?["expires"];
-            if (expiresNode == null) continue;
-
-            long expires = expiresNode.GetValue<long>();
-            if (expires < now)
-            {
-                using HttpClient http = new();
-                await http.DeleteAsync($"{firebaseDb}/sessions/{kv.Key}.json");
-            }
-        }
-    }
-    catch
-    {
-        // swallow errors to avoid crashing background task
-    }
-}, null, TimeSpan.Zero, TimeSpan.FromHours(1));
 
 app.Run();
 
