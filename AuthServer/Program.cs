@@ -88,6 +88,17 @@ app.MapPost("/hmx/get-apis", async (HttpContext ctx) =>
 
 app.Run();
 
+static async Task<JsonNode?> GetJson(string url)
+{
+    using HttpClient http = new();
+    var res = await http.GetAsync(url);
+    if (!res.IsSuccessStatusCode)
+        return null;
+
+    return JsonNode.Parse(await res.Content.ReadAsStringAsync());
+}
+
+
 // ======================================================
 // HELPERS
 // ======================================================
