@@ -93,30 +93,34 @@ app.Run();
 // ======================================================
 static JsonObject EncryptApiObject(JsonObject obj, string session, string hwid)
 {
-    string key = Hmac(session + hwid);
+    // Derive a per-session key from session+hwid
+    string keyMaterial = session + hwid;
+    byte[] key = SHA256.HashData(Encoding.UTF8.GetBytes(keyMaterial));
 
     var encrypted = new JsonObject();
     foreach (var kv in obj)
     {
-        encrypted[kv.Key] = Hmac(kv.Value!.ToString() + key);
+        string plain = kv.Value!.ToString();
+        string cipher = EncryptString(plain, key);
+        encrypted[kv.Key] = cipher;
     }
     return encrypted;
 }
 
-static string Hmac(string raw)
+static string EncryptString(string plainText, byte[] key)
 {
-    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes("HMX_API_SECRET_2025"));
-    return Convert.ToHexString(
-        hmac.ComputeHash(Encoding.UTF8.GetBytes(raw))
-    ).ToLower();
-}
+    using var aes = Aes.Create();
+    aes.Key = key;
+    aes.GenerateIV();
 
-static async Task<JsonNode?> GetJson(string url)
-{
-    using HttpClient http = new();
-    var res = await http.GetAsync(url);
-    if (!res.IsSuccessStatusCode)
-        return null;
+    using var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+    byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
+    byte[] cipherBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
 
-    return JsonNode.Parse(await res.Content.ReadAsStringAsync());
+    // Return IV + ciphertext as base64 so client can decrypt
+    byte[] combined = new byte[aes.IV.Length + cipherBytes.Length];
+    Buffer.BlockCopy(aes.IV, 0, combined, 0, aes.IV.Length);
+    Buffer.BlockCopy(cipherBytes, 0, combined, aes.IV.Length, cipherBytes.Length);
+
+    return Convert.ToBase64String(combined);
 }
