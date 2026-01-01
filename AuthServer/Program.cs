@@ -98,7 +98,7 @@ static JsonObject EncryptApiObject(JsonObject obj, string session, string hwid)
     var encrypted = new JsonObject();
     foreach (var kv in obj)
     {
-        encrypted[kv.Key] = Hmac($"{kv.Key}:{kv.Value}:{key}");
+        encrypted[kv.Key] = Hmac(kv.Value!.ToString() + key);
     }
     return encrypted;
 }
