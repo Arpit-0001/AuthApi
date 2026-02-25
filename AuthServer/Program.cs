@@ -3,10 +3,6 @@ using System.Text;
 using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.ConfigureHttpJsonOptions(options =>
-{
-    options.SerializerOptions.PropertyNameCaseInsensitive = true;
-});
 var app = builder.Build();
 
 const string SECRET = "RAVEN_BY_MR_ARPIT_120";
