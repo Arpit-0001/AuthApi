@@ -5,75 +5,205 @@ using System.Text.Json.Nodes;
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-string firebaseDb = Environment.GetEnvironmentVariable("FIREBASE_DB_URL")
-    ?.TrimEnd('/')
-    ?? throw new Exception("FIREBASE_DB_URL missing");
+const string SECRET = "RAVEN_BY_MR_ARPIT_120";
 
-const string SECRET = "HMX_API_SECRET_2025";
+string firebaseDb =
+    Environment.GetEnvironmentVariable("FIREBASE_DB_URL")!
+    .TrimEnd('/');
 
-app.MapGet("/", () => "GET-API service running");
+app.MapGet("/", () => "Raven Auth Running");
+
 
 // ======================================================
-// POST /hmx/get-apis
+// POST /raven/auth
 // ======================================================
-app.MapPost("/hmx/get-apis", async (HttpContext ctx) =>
+
+app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
     try
     {
         using var reader = new StreamReader(ctx.Request.Body);
         var raw = await reader.ReadToEndAsync();
 
-        if (string.IsNullOrWhiteSpace(raw))
-            return Results.Json(new { success = false, reason = "EMPTY_BODY" }, statusCode: 400);
-
         var body = JsonNode.Parse(raw) as JsonObject;
         if (body == null)
-            return Results.Json(new { success = false, reason = "INVALID_JSON" }, statusCode: 400);
+            return Results.Json(new { success = false });
 
-        string? session = body["session"]?.GetValue<string>();
-        string? hwid = body["hwid"]?.GetValue<string>();
+        string username = body["v1"]!.GetValue<string>();
+        string hwid = body["v2"]!.GetValue<string>();
+        string password = body["v3"]!.GetValue<string>();
+        string version = body["v4"]!.GetValue<string>();
+        string nonce = body["v5"]!.GetValue<string>();
+        string clientHmac = body["v6"]!.GetValue<string>();
+        string? referral = body["v7"]?.GetValue<string>();
 
-        if (session == null || hwid == null)
-            return Results.Json(new { success = false, reason = "MISSING_FIELDS" }, statusCode: 400);
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        // ---- validate session
-        var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
-        if (sessionNode == null)
-            return Results.Json(new { success = false, reason = "INVALID_SESSION" }, statusCode: 401);
+        // ======================================================
+        // VERSION CHECK
+        // ======================================================
 
-        long expires = sessionNode["expires"]!.GetValue<long>();
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expires)
-            return Results.Json(new { success = false, reason = "SESSION_EXPIRED" }, statusCode: 401);
+        var appCfg = await GetJson($"{firebaseDb}/app.json");
 
-        if (sessionNode["hwid"]!.GetValue<string>() != hwid)
-            return Results.Json(new { success = false, reason = "HWID_MISMATCH" }, statusCode: 403);
+        if (appCfg == null)
+            return Results.Json(new { success = false });
 
-        string userId = sessionNode["id"]!.GetValue<string>();
+        string serverVersion = appCfg["version"]!.GetValue<string>();
 
-        // ---- load data
-        var user = await GetJson($"{firebaseDb}/users/{userId}.json");
-        var apis = await GetJson($"{firebaseDb}/apis.json");
-
-        if (user == null || apis == null)
-            return Results.Json(new { success = false, reason = "DATA_LOAD_FAILED" }, statusCode: 500);
-
-        // ---- encrypt allowed APIs
-        var encryptedApis = new JsonObject();
-
-        foreach (var api in apis.AsObject())
+        if (version != serverVersion)
         {
-            if (user[api.Key]?.GetValue<bool>() == true)
+            return Results.Json(new
             {
-                encryptedApis[api.Key] =
-                    EncryptApiObject(api.Value!.AsObject(), session, hwid);
+                success = false,
+                reason = "version_mismatch"
+            });
+        }
+
+        // ======================================================
+        // VERIFY HMAC
+        // ======================================================
+
+        string rawSig = SECRET + username + password + version + nonce;
+        string expected = ComputeHmac(rawSig);
+
+        if (!CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(clientHmac),
+                Convert.FromHexString(expected)))
+        {
+            return Results.Json(new
+            {
+                success = false,
+                reason = "invalid_signature"
+            });
+        }
+
+        // ======================================================
+        // HWID BAN CHECK
+        // ======================================================
+
+        var hwidNode = await GetJson($"{firebaseDb}/hwid_attempts/{hwid}.json");
+
+        if (hwidNode != null)
+        {
+            bool banned = bool.Parse(hwidNode["banned"]!.GetValue<string>());
+            long bannedUntil = long.Parse(hwidNode["banned_until"]!.GetValue<string>());
+
+            if (banned && now < bannedUntil)
+            {
+                return Results.Json(new
+                {
+                    success = false,
+                    reason = "hwid_banned"
+                });
+            }
+
+            if (banned && now >= bannedUntil)
+            {
+                hwidNode["banned"] = "false";
+                hwidNode["attempt_remaining"] = "3";
+                hwidNode["banned_until"] = "0";
+
+                await PutJson($"{firebaseDb}/hwid_attempts/{hwid}.json", hwidNode);
             }
         }
+
+        // ======================================================
+        // LOAD USERS
+        // ======================================================
+
+        var users = await GetJson($"{firebaseDb}/users.json");
+
+        if (users == null)
+            return Results.Json(new { success = false });
+
+        string? userKey = null;
+        JsonNode? userNode = null;
+
+        foreach (var u in users.AsObject())
+        {
+            string dbUser = u.Value!["name"]!.GetValue<string>();
+            string dbPass = u.Value!["password"]!.GetValue<string>();
+
+            if (dbUser == username && dbPass == password)
+            {
+                userKey = u.Key;
+                userNode = u.Value;
+                break;
+            }
+        }
+
+        // ======================================================
+        // INVALID CREDENTIALS
+        // ======================================================
+
+        if (userNode == null)
+        {
+            int remaining = await DecreaseAttempts(hwid);
+
+            return Results.Json(new
+            {
+                success = false,
+                reason = "Invalid_credential",
+                remaining_attempts = remaining
+            });
+        }
+
+        // ======================================================
+        // HWID POLICY
+        // ======================================================
+
+        var status = userNode["status"]!.AsObject();
+
+        bool hwidLocked = bool.Parse(status["hwid_locked"]!.GetValue<string>());
+        var hwids = status["hwids"]!.AsObject();
+
+        if (!hwidLocked)
+        {
+            bool exists = hwids.Any(x => x.Value!.GetValue<string>() == hwid);
+
+            if (!exists)
+            {
+                var empty = hwids.FirstOrDefault(x => string.IsNullOrEmpty(x.Value!.GetValue<string>()));
+
+                if (empty.Key != null)
+                {
+                    hwids[empty.Key] = hwid;
+
+                    await PutJson($"{firebaseDb}/users/{userKey}/status/hwids.json", hwids);
+                }
+                else
+                {
+                    status["hwid_locked"] = "true";
+
+                    await PutJson($"{firebaseDb}/users/{userKey}/status.json", status);
+
+                    return Results.Json(new
+                    {
+                        success = false,
+                        reason = "new_user"
+                    });
+                }
+            }
+        }
+
+        // ======================================================
+        // CREATE SESSION
+        // ======================================================
+
+        string session = GenerateSession();
+        long expiry = now + 1800;
+
+        await PutJson($"{firebaseDb}/sessions/{session}.json", new JsonObject
+        {
+            ["belong_user"] = $"{userKey}_{hwid}",
+            ["s_expiry"] = expiry.ToString()
+        });
 
         return Results.Json(new
         {
             success = true,
-            ttl = 30,
-            apis = encryptedApis
+            session,
+            expiry
         });
     }
     catch (Exception ex)
@@ -82,56 +212,90 @@ app.MapPost("/hmx/get-apis", async (HttpContext ctx) =>
         {
             success = false,
             error = ex.Message
-        }, statusCode: 500);
+        });
     }
 });
 
+
 app.Run();
+
+
+// ======================================================
+// HELPERS
+// ======================================================
+
+static string ComputeHmac(string raw)
+{
+    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(SECRET));
+
+    return Convert.ToHexString(
+        hmac.ComputeHash(Encoding.UTF8.GetBytes(raw))
+    ).ToLower();
+}
+
+static string GenerateSession()
+{
+    byte[] bytes = RandomNumberGenerator.GetBytes(32);
+    return Convert.ToHexString(bytes).ToLower();
+}
 
 static async Task<JsonNode?> GetJson(string url)
 {
     using HttpClient http = new();
+
     var res = await http.GetAsync(url);
+
     if (!res.IsSuccessStatusCode)
         return null;
 
     return JsonNode.Parse(await res.Content.ReadAsStringAsync());
 }
 
-
-// ======================================================
-// HELPERS
-// ======================================================
-static JsonObject EncryptApiObject(JsonObject obj, string session, string hwid)
+static async Task PutJson(string url, JsonNode body)
 {
-    // Derive a per-session key from session+hwid
-    string keyMaterial = session + hwid;
-    byte[] key = SHA256.HashData(Encoding.UTF8.GetBytes(keyMaterial));
+    using HttpClient http = new();
 
-    var encrypted = new JsonObject();
-    foreach (var kv in obj)
-    {
-        string plain = kv.Value!.ToString();
-        string cipher = EncryptString(plain, key);
-        encrypted[kv.Key] = cipher;
-    }
-    return encrypted;
+    await http.PutAsync(
+        url,
+        new StringContent(
+            body.ToJsonString(),
+            Encoding.UTF8,
+            "application/json"));
 }
 
-static string EncryptString(string plainText, byte[] key)
+static async Task<int> DecreaseAttempts(string hwid)
 {
-    using var aes = Aes.Create();
-    aes.Key = key;
-    aes.GenerateIV();
+    string baseUrl = Environment.GetEnvironmentVariable("FIREBASE_DB_URL")!
+        .TrimEnd('/');
 
-    using var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
-    byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
-    byte[] cipherBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
+    var node = await GetJson($"{baseUrl}/hwid_attempts/{hwid}.json");
 
-    // Return IV + ciphertext as base64 so client can decrypt
-    byte[] combined = new byte[aes.IV.Length + cipherBytes.Length];
-    Buffer.BlockCopy(aes.IV, 0, combined, 0, aes.IV.Length);
-    Buffer.BlockCopy(cipherBytes, 0, combined, aes.IV.Length, cipherBytes.Length);
+    long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-    return Convert.ToBase64String(combined);
+    int remain = node?["attempt_remaining"] != null
+        ? int.Parse(node["attempt_remaining"]!.GetValue<string>())
+        : 3;
+
+    remain--;
+
+    if (remain <= 0)
+    {
+        await PutJson($"{baseUrl}/hwid_attempts/{hwid}.json", new JsonObject
+        {
+            ["banned"] = "true",
+            ["banned_until"] = (now + 86400).ToString(),
+            ["attempt_remaining"] = "0"
+        });
+
+        return 0;
+    }
+
+    await PutJson($"{baseUrl}/hwid_attempts/{hwid}.json", new JsonObject
+    {
+        ["banned"] = "false",
+        ["banned_until"] = "0",
+        ["attempt_remaining"] = remain.ToString()
+    });
+
+    return remain;
 }
