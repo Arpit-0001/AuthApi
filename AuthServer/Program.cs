@@ -173,42 +173,41 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
         // HWID POLICY
         // ======================================================
 
-        JsonObject status = userNode["status"] as JsonObject 
-        ?? new JsonObject();
+   var status = userNode["status"]!.AsObject();
 
-        bool hwidLocked = bool.Parse(status["hwid_locked"]!.GetValue<string>());
-        JsonObject hwids = status["hwids"] as JsonObject 
-        ?? new JsonObject();
-
-        if (!hwidLocked)
+    bool hwidLocked = status["hwid_locked"]?.GetValue<bool>() ?? false;
+    
+    var hwids = status["hwids"]?.AsObject() ?? new JsonObject();
+    
+    if (!hwidLocked)
+    {
+        bool exists = hwids.Any(x => x.Value?.ToString() == hwid);
+    
+        if (!exists)
         {
-            bool exists = hwids.Any(x => x.Value!.GetValue<string>() == hwid);
-
-            if (!exists)
+            var empty = hwids.FirstOrDefault(x =>
+                string.IsNullOrEmpty(x.Value?.ToString()));
+    
+            if (!string.IsNullOrEmpty(empty.Key))
             {
-                var empty = hwids.FirstOrDefault(x => string.IsNullOrEmpty(x.Value!.GetValue<string>()));
-
-                if (empty.Key != null)
+                hwids[empty.Key] = hwid;
+    
+                await PutJson($"{firebaseDb}/users/{userKey}/status/hwids.json", hwids);
+            }
+            else
+            {
+                status["hwid_locked"] = true;
+    
+                await PutJson($"{firebaseDb}/users/{userKey}/status.json", status);
+    
+                return Results.Json(new
                 {
-                    hwids[empty.Key] = hwid;
-
-                    await PutJson($"{firebaseDb}/users/{userKey}/status/hwids.json", hwids);
-                }
-                else
-                {
-                    status["hwid_locked"] = "true";
-
-                    await PutJson($"{firebaseDb}/users/{userKey}/status.json", status);
-
-                    return Results.Json(new
-                    {
-                        success = false,
-                        reason = "new_user"
-                    });
-                }
+                    success = false,
+                    reason = "hwid_limit_reached"
+                });
             }
         }
-
+    }
 // ======================================================
 // CREATE SESSION
 // ======================================================
