@@ -186,38 +186,56 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
             }
         }
 
-        // ======================================================
-        // CREATE SESSION
-        // ======================================================
+// ======================================================
+// CREATE SESSION
+// ======================================================
 
-        string session = GenerateSession();
-        long expiry = now + 1800;
+string session = GenerateSession();
+long expiry = now + 1800;
 
-        await PutJson($"{firebaseDb}/sessions/{session}.json", new JsonObject
-        {
-            ["belong_user"] = $"{userKey}_{hwid}",
-            ["s_expiry"] = expiry.ToString()
-        });
-
-        return Results.Json(new
-        {
-            success = true,
-            session,
-            expiry
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
-    }
+await PutJson($"{firebaseDb}/sessions/{session}.json", new JsonObject
+{
+    ["belong_user"] = $"{userKey}_{hwid}",
+    ["s_expiry"] = expiry.ToString()
 });
 
 
-app.Run();
+// ======================================================
+// BUILD ACCOUNTS OUTPUT
+// ======================================================
+
+var accountsNode = userNode["accounts"]?.AsObject();
+var accountsOut = new JsonObject();
+
+if (accountsNode != null)
+{
+    foreach (var acc in accountsNode)
+    {
+        string accName = acc.Value!["account_name"]!.GetValue<string>();
+        string accPass = acc.Value!["account_password"]!.GetValue<string>();
+
+        string signedPassword = ComputeHmac(SECRET + session + accPass);
+
+        accountsOut[acc.Key] = new JsonObject
+        {
+            ["account_name"] = accName,
+            ["account_password"] = signedPassword
+        };
+    }
+}
+
+
+// ======================================================
+// RESPONSE
+// ======================================================
+
+return Results.Json(new
+{
+    success = true,
+    session = session,
+    expiry = expiry,
+    accounts = accountsOut
+});
 
 
 // ======================================================
