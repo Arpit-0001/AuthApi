@@ -102,8 +102,8 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 
         if (hwidNode != null)
         {
-            bool banned = bool.Parse(hwidNode["banned"]!.GetValue<string>());
-            long bannedUntil = long.Parse(hwidNode["banned_until"]!.GetValue<string>());
+            bool banned = hwidNode["banned"]?.GetValue<bool>() ?? false;
+            long bannedUntil = hwidNode["banned_until"]?.GetValue<long>() ?? 0;
 
             if (banned && now < bannedUntil)
             {
