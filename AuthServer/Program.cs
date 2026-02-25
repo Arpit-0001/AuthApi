@@ -22,7 +22,10 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
     try
     {
-        JsonNode? node = await JsonNode.ParseAsync(ctx.Request.Body);
+        using var reader = new StreamReader(ctx.Request.Body);
+        string raw = await reader.ReadToEndAsync();
+
+        JsonNode? node = JsonNode.Parse(raw);
         
         if (node is not JsonObject body)
         {
