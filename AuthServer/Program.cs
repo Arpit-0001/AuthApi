@@ -136,7 +136,11 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
         string? userKey = null;
         JsonNode? userNode = null;
 
-        foreach (var u in users.AsObject())
+        var usersObj = users as JsonObject;
+        if (usersObj == null)
+            return Results.Json(new { success = false });
+
+        foreach (var u in usersObj)
         {
             string dbUser = u.Value!["name"]!.GetValue<string>();
             string dbPass = u.Value!["password"]!.GetValue<string>();
@@ -169,10 +173,12 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
         // HWID POLICY
         // ======================================================
 
-        var status = userNode["status"]!.AsObject();
+        JsonObject status = userNode["status"] as JsonObject 
+        ?? new JsonObject();
 
         bool hwidLocked = bool.Parse(status["hwid_locked"]!.GetValue<string>());
-        var hwids = status["hwids"]!.AsObject();
+        JsonObject hwids = status["hwids"] as JsonObject 
+        ?? new JsonObject();
 
         if (!hwidLocked)
         {
@@ -221,7 +227,7 @@ await PutJson($"{firebaseDb}/sessions/{session}.json", new JsonObject
 // BUILD ACCOUNTS OUTPUT
 // ======================================================
 
-var accountsNode = userNode["accounts"]?.AsObject();
+JsonObject? accountsNode = userNode["accounts"] as JsonObject;
 var accountsOut = new JsonObject();
 
 if (accountsNode != null)
