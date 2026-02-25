@@ -328,3 +328,4 @@ static async Task<int> DecreaseAttempts(string hwid)
     return remain;
 }
 
+app.Run();
