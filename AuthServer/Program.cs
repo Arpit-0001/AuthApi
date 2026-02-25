@@ -3,6 +3,10 @@ using System.Text;
 using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNameCaseInsensitive = true;
+});
 var app = builder.Build();
 
 const string SECRET = "RAVEN_BY_MR_ARPIT_120";
@@ -22,12 +26,13 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
     try
     {
-        using var reader = new StreamReader(ctx.Request.Body);
-        string raw = await reader.ReadToEndAsync();
-        Console.WriteLine(raw);
-        JsonNode? node = JsonNode.Parse(raw);
+        JsonObject? body;
         
-        if (node is not JsonObject body)
+        try
+        {
+            body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        }
+        catch
         {
             return Results.Json(new
             {
@@ -35,16 +40,23 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
                 error = "invalid_json"
             });
         }
+        
         if (body == null)
-            return Results.Json(new { success = false });
+        {
+            return Results.Json(new
+            {
+                success = false,
+                error = "invalid_json"
+            });
+        }
 
-        string username = body["v1"]!.GetValue<string>();
-        string hwid = body["v2"]!.GetValue<string>();
-        string password = body["v3"]!.GetValue<string>();
-        string version = body["v4"]!.GetValue<string>();
-        string nonce = body["v5"]!.GetValue<string>();
-        string clientHmac = body["v6"]!.GetValue<string>();
-        string? referral = body["v7"]?.GetValue<string>();
+        string username = body["v1"]?.ToString() ?? "";
+        string hwid = body["v2"]?.ToString() ?? "";
+        string password = body["v3"]?.ToString() ?? "";
+        string version = body["v4"]?.ToString() ?? "";
+        string nonce = body["v5"]?.ToString() ?? "";
+        string clientHmac = body["v6"]?.ToString() ?? "";
+        string? referral = body["v7"]?.ToString();
 
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
