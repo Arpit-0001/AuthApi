@@ -236,6 +236,16 @@ return Results.Json(new
     expiry = expiry,
     accounts = accountsOut
 });
+}
+catch (Exception ex)
+{
+    return Results.Json(new
+    {
+        success = false,
+        error = ex.Message
+    });
+}
+});
 
 
 // ======================================================
