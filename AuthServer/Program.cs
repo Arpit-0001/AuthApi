@@ -7,9 +7,136 @@ var app = builder.Build();
 
 const string SECRET = "RAVEN_BY_MR_ARPIT_120";
 
+
+
 string firebaseDb =
     Environment.GetEnvironmentVariable("FIREBASE_DB_URL")!
     .TrimEnd('/');
+
+
+using System.Timers;
+
+// Call this after app.Build() but before app.Run()
+var cleanupTimer = new Timer(600000); // 10 minutes = 600,000 ms
+cleanupTimer.Elapsed += async (sender, e) =>
+{
+    await CleanupExpiredAccountsAndSessions();
+};
+cleanupTimer.AutoReset = true;
+cleanupTimer.Start();
+
+async Task CleanupExpiredAccountsAndSessions()
+{
+    long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    // 1. Cleanup sessions
+    var sessionsNode = await GetJson($"{firebaseDb}/sessions.json") as JsonObject;
+    if (sessionsNode != null)
+    {
+        foreach (var s in sessionsNode.Keys.ToList())
+        {
+            long expiry = 0;
+            if (sessionsNode[s]?["s_expiry"] != null)
+            {
+                long.TryParse(sessionsNode[s]!["s_expiry"].ToString(), out expiry);
+            }
+            if (expiry <= now)
+            {
+                await DeleteJson($"{firebaseDb}/sessions/{s}.json");
+            }
+        }
+    }
+
+    // 2. Cleanup expired accounts
+    var usersNode = await GetJson($"{firebaseDb}/users.json") as JsonObject;
+    if (usersNode != null)
+    {
+        foreach (var uKey in usersNode.Keys)
+        {
+            var accountsNode = usersNode[uKey]?["accounts"] as JsonObject;
+            if (accountsNode != null)
+            {
+                foreach (var aKey in accountsNode.Keys.ToList())
+                {
+                    long accExpiry = 0;
+                    if (accountsNode[aKey]?["s_expiry"] != null)
+                        long.TryParse(accountsNode[aKey]!["s_expiry"].ToString(), out accExpiry);
+
+                    if (accExpiry <= now)
+                    {
+                        accountsNode.Remove(aKey);
+                    }
+                }
+
+                await PutJson($"{firebaseDb}/users/{uKey}/accounts.json", accountsNode);
+            }
+        }
+    }
+}
+
+// Delete helper
+static async Task DeleteJson(string url)
+{
+    using HttpClient http = new();
+    await http.DeleteAsync(url);
+}
+
+
+app.MapPost("/raven/client", async (HttpContext ctx) =>
+{
+    try
+    {
+        JsonObject? body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        if (body == null)
+            return Results.Json(new { success = false, reason = "invalid_json" });
+
+        string session = body["session"]?.ToString() ?? "";
+        string username = body["username"]?.ToString() ?? "";
+
+        if (string.IsNullOrEmpty(session) || string.IsNullOrEmpty(username))
+            return Results.Json(new { success = false, reason = "missing_parameters" });
+
+        // Check session
+        var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
+        if (sessionNode == null) return Results.Json(new { success = false, reason = "invalid_session" });
+
+        long sExpiry = 0;
+        if (sessionNode["s_expiry"] != null)
+            long.TryParse(sessionNode["s_expiry"].ToString(), out sExpiry);
+
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (sExpiry <= now)
+            return Results.Json(new { success = false, reason = "session_expired" });
+
+        string belongUser = sessionNode["belong_user"]!.ToString();
+        string userKey = belongUser[..belongUser.IndexOf('_')];
+
+        // Load client nodes
+        var clientsNode = await GetJson($"{firebaseDb}/client.json") as JsonObject;
+        if (clientsNode == null)
+            return Results.Json(new { success = false, reason = "no_clients" });
+
+        foreach (var cKey in clientsNode.Keys)
+        {
+            var cObj = clientsNode[cKey]!.AsObject();
+            if (cObj["parent_acct"]?.ToString() == userKey && cObj["account_name"]?.ToString() == username)
+            {
+                // Return the client details
+                return Results.Json(new
+                {
+                    success = true,
+                    client_details = cObj
+                });
+            }
+        }
+
+        return Results.Json(new { success = false, reason = "client_not_found" });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message });
+    }
+});
 
 app.MapGet("/", () => "Raven Auth Running");
 
