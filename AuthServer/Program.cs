@@ -209,7 +209,18 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         }
 
         // ===== CHECK FOR DUPLICATE NAME =====
-        if (accountsNode.Values.Any(a => a?["account_name"]?.GetValue<string>() == accName))
+        bool nameExists = false;
+        foreach (var kvp in accountsNode)
+        {
+            var account = kvp.Value?.AsObject();
+            if (account != null && account["account_name"]?.GetValue<string>() == accName)
+            {
+                nameExists = true;
+                break;
+            }
+        }
+        
+        if (nameExists)
         {
             return Results.Json(new { success = false, reason = "name_present" });
         }
