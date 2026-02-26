@@ -173,32 +173,39 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
         // HWID POLICY
         // ======================================================
 
-   var status = userNode["status"]!.AsObject();
-
+    var status = userNode["status"]!.AsObject();
+    
     bool hwidLocked = status["hwid_locked"]?.GetValue<bool>() ?? false;
     
-    var hwids = status["hwids"]?.AsObject() ?? new JsonObject();
+    var hwidArray = status["hwids"] as JsonArray ?? new JsonArray();
     
     if (!hwidLocked)
     {
-        bool exists = hwids.Any(x => x.Value?.ToString() == hwid);
+        bool exists = hwidArray.Any(x => x?.ToString() == hwid);
     
         if (!exists)
         {
-            var empty = hwids.FirstOrDefault(x =>
-                string.IsNullOrEmpty(x.Value?.ToString()));
+            int emptyIndex = hwidArray
+                .Select((v, i) => new { v, i })
+                .FirstOrDefault(x => string.IsNullOrEmpty(x.v?.ToString()))?.i ?? -1;
     
-            if (!string.IsNullOrEmpty(empty.Key))
+            if (emptyIndex != -1)
             {
-                hwids[empty.Key] = hwid;
+                hwidArray[emptyIndex] = hwid;
     
-                await PutJson($"{firebaseDb}/users/{userKey}/status/hwids.json", hwids);
+                await PutJson(
+                    $"{firebaseDb}/users/{userKey}/status/hwids.json",
+                    hwidArray
+                );
             }
             else
             {
                 status["hwid_locked"] = true;
     
-                await PutJson($"{firebaseDb}/users/{userKey}/status.json", status);
+                await PutJson(
+                    $"{firebaseDb}/users/{userKey}/status.json",
+                    status
+                );
     
                 return Results.Json(new
                 {
