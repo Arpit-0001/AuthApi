@@ -102,8 +102,11 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 
         if (hwidNode != null)
         {
-            bool banned = hwidNode["banned"]?.GetValue<bool>() ?? false;
-            long bannedUntil = hwidNode["banned_until"]?.GetValue<long>() ?? 0;
+            bool banned = false;
+            long bannedUntil = 0;
+            
+            bool.TryParse(hwidNode?["banned"]?.ToString(), out banned);
+            long.TryParse(hwidNode?["banned_until"]?.ToString(), out bannedUntil);
 
             if (banned && now < bannedUntil)
             {
@@ -175,9 +178,35 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 
     var status = userNode["status"]!.AsObject();
     
-    bool hwidLocked = status["hwid_locked"]?.GetValue<bool>() ?? false;
+    /* ---------- READ HWID LOCK SAFELY ---------- */
     
-    var hwidArray = status["hwids"] as JsonArray ?? new JsonArray();
+    bool hwidLocked = false;
+    
+    if (status["hwid_locked"] != null)
+    {
+        if (status["hwid_locked"] is JsonValue v)
+        {
+            if (v.TryGetValue<bool>(out var b))
+                hwidLocked = b;
+            else if (v.TryGetValue<string>(out var s))
+                bool.TryParse(s, out hwidLocked);
+        }
+    }
+    
+    /* ---------- GET HWID ARRAY SAFELY ---------- */
+    
+    JsonArray hwidArray;
+    
+    if (status["hwids"] is JsonArray arr)
+    {
+        hwidArray = arr;
+    }
+    else
+    {
+        hwidArray = new JsonArray(null, "", "");
+    }
+    
+    /* ---------- REGISTER HWID ---------- */
     
     if (!hwidLocked)
     {
@@ -185,9 +214,16 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
     
         if (!exists)
         {
-            int emptyIndex = hwidArray
-                .Select((v, i) => new { v, i })
-                .FirstOrDefault(x => string.IsNullOrEmpty(x.v?.ToString()))?.i ?? -1;
+            int emptyIndex = -1;
+    
+            for (int i = 0; i < hwidArray.Count; i++)
+            {
+                if (string.IsNullOrEmpty(hwidArray[i]?.ToString()))
+                {
+                    emptyIndex = i;
+                    break;
+                }
+            }
     
             if (emptyIndex != -1)
             {
@@ -225,7 +261,7 @@ long expiry = now + 1800;
 await PutJson($"{firebaseDb}/sessions/{session}.json", new JsonObject
 {
     ["belong_user"] = $"{userKey}_{hwid}",
-    ["s_expiry"] = expiry.ToString()
+    ["s_expiry"] = expiry
 });
 
 
@@ -329,9 +365,18 @@ static async Task<int> DecreaseAttempts(string hwid)
 
     long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-    int remain = node?["attempt_remaining"] != null
-        ? int.Parse(node["attempt_remaining"]!.GetValue<string>())
-        : 3;
+    int remain = 3;
+
+    if (node?["attempt_remaining"] != null)
+    {
+        if (node["attempt_remaining"] is JsonValue v)
+        {
+            if (!v.TryGetValue<int>(out remain))
+            {
+                int.TryParse(v.ToString(), out remain);
+            }
+        }
+    }
 
     remain--;
 
@@ -340,8 +385,8 @@ static async Task<int> DecreaseAttempts(string hwid)
         await PutJson($"{baseUrl}/hwid_attempts/{hwid}.json", new JsonObject
         {
             ["banned"] = true,
-            ["banned_until"] = (now + 86400).ToString(),
-            ["attempt_remaining"] = "0"
+            ["banned_until"] = now + 86400,
+            ["attempt_remaining"] = 0
         });
 
         return 0;
@@ -349,9 +394,9 @@ static async Task<int> DecreaseAttempts(string hwid)
 
     await PutJson($"{baseUrl}/hwid_attempts/{hwid}.json", new JsonObject
     {
-        ["banned"] = "false",
-        ["banned_until"] = "0",
-        ["attempt_remaining"] = remain.ToString()
+        ["banned"] = false,
+        ["banned_until"] = 0,
+        ["attempt_remaining"] = remain
     });
 
     return remain;
