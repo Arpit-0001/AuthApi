@@ -112,12 +112,14 @@ app.MapPost("/raven/client", async (HttpContext ctx) =>
         if (clientsNode == null)
             return Results.Json(new { success = false, reason = "no_clients" });
 
-        foreach (var cKey in clientsNode.Keys)
+        foreach (var kvp in clientsNode)  // kvp is KeyValuePair<string, JsonNode?>
         {
-            var cObj = clientsNode[cKey]!.AsObject();
-            if (cObj["parent_acct"]?.ToString() == userKey && cObj["account_name"]?.ToString() == username)
+            string cKey = kvp.Key;
+            var cObj = kvp.Value!.AsObject(); // cast safely to JsonObject
+        
+            if (cObj["parent_acct"]?.ToString() == userKey &&
+                cObj["account_name"]?.ToString() == username)
             {
-                // Return the client details
                 return Results.Json(new
                 {
                     success = true,
