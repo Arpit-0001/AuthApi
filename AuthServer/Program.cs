@@ -116,7 +116,7 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
 
             if (banned && now >= bannedUntil)
             {
-                hwidNode["banned"] = "false";
+                hwidNode["banned"] = false;
                 hwidNode["attempt_remaining"] = "3";
                 hwidNode["banned_until"] = "0";
 
@@ -332,7 +332,7 @@ static async Task<int> DecreaseAttempts(string hwid)
     {
         await PutJson($"{baseUrl}/hwid_attempts/{hwid}.json", new JsonObject
         {
-            ["banned"] = "true",
+            ["banned"] = true,
             ["banned_until"] = (now + 86400).ToString(),
             ["attempt_remaining"] = "0"
         });
