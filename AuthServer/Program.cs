@@ -18,6 +18,146 @@ app.MapGet("/", () => "Raven Auth Running");
 // POST /raven/auth
 // ======================================================
 
+// ======================================================
+// POST /raven/create_account
+// ======================================================
+
+app.MapPost("/raven/create_account", async (HttpContext ctx) =>
+{
+    try
+    {
+        JsonObject? body;
+
+        try
+        {
+            body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        }
+        catch
+        {
+            return Results.Json(new { success = false });
+        }
+
+        if (body == null)
+            return Results.Json(new { success = false });
+
+        string session = body["session"]?.ToString() ?? "";
+        string accName = body["account_name"]?.ToString() ?? "";
+        string accPass = body["account_password"]?.ToString() ?? "";
+
+        if (session == "" || accName == "" || accPass == "")
+        {
+            return Results.Json(new { success = false });
+        }
+
+        // ======================================================
+        // VERIFY SESSION
+        // ======================================================
+
+        var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
+
+        if (sessionNode == null)
+        {
+            return Results.Json(new
+            {
+                success = false,
+                reason = "invalid_session"
+            });
+        }
+
+        long expiry = 0;
+
+        if (sessionNode["s_expiry"] is JsonValue v)
+        {
+            if (!v.TryGetValue<long>(out expiry))
+                long.TryParse(v.ToString(), out expiry);
+        }
+
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        if (now > expiry)
+        {
+            return Results.Json(new
+            {
+                success = false,
+                reason = "session_expired"
+            });
+        }
+
+        string belong = sessionNode["belong_user"]!.ToString();
+
+        string userKey = belong[..belong.IndexOf('_')];
+
+        // ======================================================
+        // LOAD USER
+        // ======================================================
+
+        var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
+
+        if (userNode == null)
+            return Results.Json(new { success = false });
+
+        var userObj = userNode.AsObject();
+
+        var accountsNode = userObj["accounts"] as JsonObject ?? new JsonObject();
+
+        var status = userObj["status"]!.AsObject();
+
+        int maxAccounts = 1;
+
+        if (status["max_hwid"] is JsonValue mv)
+        {
+            if (!mv.TryGetValue<int>(out maxAccounts))
+                int.TryParse(mv.ToString(), out maxAccounts);
+        }
+
+        int currentAccounts = accountsNode.Count;
+
+        // ======================================================
+        // LIMIT CHECK
+        // ======================================================
+
+        if (currentAccounts >= maxAccounts)
+        {
+            return Results.Json(new
+            {
+                success = false,
+                reason = "account_limit_reached"
+            });
+        }
+
+        // ======================================================
+        // CREATE ACCOUNT
+        // ======================================================
+
+        string newKey = "account" + (currentAccounts + 1);
+
+        accountsNode[newKey] = new JsonObject
+        {
+            ["account_name"] = accName,
+            ["account_password"] = accPass
+        };
+
+        await PutJson(
+            $"{firebaseDb}/users/{userKey}/accounts.json",
+            accountsNode
+        );
+
+        return Results.Json(new
+        {
+            success = true,
+            account_created = true
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            error = ex.Message
+        });
+    }
+});
+
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
     try
@@ -206,7 +346,15 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
         hwidArray = new JsonArray(null, "", "");
     }
     
-    /* ---------- REGISTER HWID ---------- */
+    /* ---------- REGISTER HWID (FIXED LIMIT) ---------- */
+    
+    int maxHwid = 1;
+    
+    if (status["max_hwid"] is JsonValue mv)
+    {
+        if (!mv.TryGetValue<int>(out maxHwid))
+            int.TryParse(mv.ToString(), out maxHwid);
+    }
     
     if (!hwidLocked)
     {
@@ -214,27 +362,9 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
     
         if (!exists)
         {
-            int emptyIndex = -1;
+            int used = hwidArray.Count(x => !string.IsNullOrEmpty(x?.ToString()));
     
-            for (int i = 0; i < hwidArray.Count; i++)
-            {
-                if (string.IsNullOrEmpty(hwidArray[i]?.ToString()))
-                {
-                    emptyIndex = i;
-                    break;
-                }
-            }
-    
-            if (emptyIndex != -1)
-            {
-                hwidArray[emptyIndex] = hwid;
-    
-                await PutJson(
-                    $"{firebaseDb}/users/{userKey}/status/hwids.json",
-                    hwidArray
-                );
-            }
-            else
+            if (used >= maxHwid)
             {
                 status["hwid_locked"] = true;
     
@@ -249,6 +379,31 @@ app.MapPost("/raven/auth", async (HttpContext ctx) =>
                     reason = "hwid_limit_reached"
                 });
             }
+    
+            int emptyIndex = -1;
+    
+            for (int i = 0; i < hwidArray.Count; i++)
+            {
+                if (string.IsNullOrEmpty(hwidArray[i]?.ToString()))
+                {
+                    emptyIndex = i;
+                    break;
+                }
+            }
+    
+            if (emptyIndex == -1)
+            {
+                hwidArray.Add(hwid);
+            }
+            else
+            {
+                hwidArray[emptyIndex] = hwid;
+            }
+    
+            await PutJson(
+                $"{firebaseDb}/users/{userKey}/status/hwids.json",
+                hwidArray
+            );
         }
     }
 // ======================================================
