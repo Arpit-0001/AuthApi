@@ -169,7 +169,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string accName = body["account_name"]?.ToString() ?? "";
         string accPass = body["account_password"]?.ToString() ?? "";
 
-        if (session == "" || accName == "" || accPass == "")
+        if (string.IsNullOrEmpty(session) || string.IsNullOrEmpty(accName) || string.IsNullOrEmpty(accPass))
         {
             return Results.Json(new { success = false });
         }
@@ -177,20 +177,12 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         // ======================================================
         // VERIFY SESSION
         // ======================================================
-
         var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
 
         if (sessionNode == null)
-        {
-            return Results.Json(new
-            {
-                success = false,
-                reason = "invalid_session"
-            });
-        }
+            return Results.Json(new { success = false, reason = "invalid_session" });
 
         long expiry = 0;
-
         if (sessionNode["s_expiry"] is JsonValue v)
         {
             if (!v.TryGetValue<long>(out expiry))
@@ -198,37 +190,24 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         }
 
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
         if (now > expiry)
-        {
-            return Results.Json(new
-            {
-                success = false,
-                reason = "session_expired"
-            });
-        }
+            return Results.Json(new { success = false, reason = "session_expired" });
 
         string belong = sessionNode["belong_user"]!.ToString();
-
         string userKey = belong[..belong.IndexOf('_')];
 
         // ======================================================
         // LOAD USER
         // ======================================================
-
         var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
-
         if (userNode == null)
             return Results.Json(new { success = false });
 
         var userObj = userNode.AsObject();
-
         var accountsNode = userObj["accounts"] as JsonObject ?? new JsonObject();
-
         var status = userObj["status"]!.AsObject();
 
         int maxAccounts = 1;
-
         if (status["max_hwid"] is JsonValue mv)
         {
             if (!mv.TryGetValue<int>(out maxAccounts))
@@ -240,46 +219,38 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         // ======================================================
         // LIMIT CHECK
         // ======================================================
-
         if (currentAccounts >= maxAccounts)
+            return Results.Json(new { success = false, reason = "account_limit_reached" });
+
+        // ======================================================
+        // DUPLICATE USERNAME CHECK
+        // ======================================================
+        foreach (var acc in accountsNode)
         {
-            return Results.Json(new
+            string existingName = acc.Value!["account_name"]?.ToString() ?? "";
+            if (existingName.Equals(accName, StringComparison.OrdinalIgnoreCase))
             {
-                success = false,
-                reason = "account_limit_reached"
-            });
+                return Results.Json(new { success = false, reason = "name_present" });
+            }
         }
 
         // ======================================================
         // CREATE ACCOUNT
         // ======================================================
-
         string newKey = "account" + (currentAccounts + 1);
-
         accountsNode[newKey] = new JsonObject
         {
             ["account_name"] = accName,
             ["account_password"] = accPass
         };
 
-        await PutJson(
-            $"{firebaseDb}/users/{userKey}/accounts.json",
-            accountsNode
-        );
+        await PutJson($"{firebaseDb}/users/{userKey}/accounts.json", accountsNode);
 
-        return Results.Json(new
-        {
-            success = true,
-            account_created = true
-        });
+        return Results.Json(new { success = true, account_created = true });
     }
     catch (Exception ex)
     {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
+        return Results.Json(new { success = false, error = ex.Message });
     }
 });
 
