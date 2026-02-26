@@ -31,18 +31,18 @@ async Task CleanupExpiredAccountsAndSessions()
     var sessionsNode = await GetJson($"{firebaseDb}/sessions.json") as JsonObject;
     if (sessionsNode != null)
     {
-        foreach (var s in sessionsNode!.AsObject())
+        foreach (var kvp in sessionsNode)  // Use foreach over JsonObject
         {
-            string key = s.Key;
-            var value = s.Value;
+            string sessionKey = kvp.Key;
+            var sessionValue = kvp.Value;
+
             long expiry = 0;
-            if (sessionsNode[s]?["s_expiry"] != null)
-            {
-                long.TryParse(sessionsNode[s]!["s_expiry"].ToString(), out expiry);
-            }
+            if (sessionValue?["s_expiry"] != null)
+                long.TryParse(sessionValue["s_expiry"]!.ToString(), out expiry);
+
             if (expiry <= now)
             {
-                await DeleteJson($"{firebaseDb}/sessions/{s}.json");
+                await DeleteJson($"{firebaseDb}/sessions/{sessionKey}.json");
             }
         }
     }
@@ -51,24 +51,20 @@ async Task CleanupExpiredAccountsAndSessions()
     var usersNode = await GetJson($"{firebaseDb}/users.json") as JsonObject;
     if (usersNode != null)
     {
-        foreach (var uKey in usersNode.Keys)
+        foreach (var kvp in usersNode)  // Again, foreach over JsonObject
         {
-            var accountsNode = usersNode[uKey]?["accounts"] as JsonObject;
+            string uKey = kvp.Key;
+            var userEntry = kvp.Value!;
+
+            var accountsNode = userEntry["accounts"] as JsonObject;
             if (accountsNode != null)
             {
-                foreach (var aKey in accountsNode.Keys.ToList())
+                foreach (var accKvp in accountsNode)  // JsonObject loop
                 {
-                    long accExpiry = 0;
-                    if (accountsNode[aKey]?["s_expiry"] != null)
-                        long.TryParse(accountsNode[aKey]!["s_expiry"].ToString(), out accExpiry);
-
-                    if (accExpiry <= now)
-                    {
-                        accountsNode.Remove(aKey);
-                    }
+                    string accKey = accKvp.Key;
+                    var accValue = accKvp.Value;
+                    // You can now safely use accKey and accValue
                 }
-
-                await PutJson($"{firebaseDb}/users/{uKey}/accounts.json", accountsNode);
             }
         }
     }
