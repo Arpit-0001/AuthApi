@@ -94,7 +94,8 @@ app.MapPost("/raven/client", async (HttpContext ctx) =>
 
         // Check session
         var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
-        if (sessionNode == null) return Results.Json(new { success = false, reason = "invalid_session" });
+        if (sessionNode == null) 
+            return Results.Json(new { success = false, reason = "invalid_session" });
 
         long sExpiry = 0;
         if (sessionNode["s_expiry"] != null)
@@ -112,13 +113,13 @@ app.MapPost("/raven/client", async (HttpContext ctx) =>
         if (clientsNode == null)
             return Results.Json(new { success = false, reason = "no_clients" });
 
-        foreach (var kvp in clientsNode)  // kvp is KeyValuePair<string, JsonNode?>
+        // Find the client for this user
+        foreach (var kvp in clientsNode)
         {
-            string cKey = kvp.Key;
-            var cObj = kvp.Value!.AsObject(); // cast safely to JsonObject
-        
-            if (cObj["parent_acct"]?.ToString() == userKey &&
-                cObj["account_name"]?.ToString() == username)
+            var cObj = kvp.Value!.AsObject();
+
+            if (cObj["user_key"]?.ToString() == userKey &&
+                cObj["parent_acct"]?.ToString() == username)
             {
                 return Results.Json(new
                 {
@@ -248,14 +249,15 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         // ===== CREATE CLIENT ENTRY =====
         var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
         string clientKey = "client" + (clientNode.Count + 1);
-
+        
         // Generate random backup code: XXXX-XXXX-XXXX-XXXX
         string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
             Random.Shared.Next(1000, 9999).ToString()
         ));
-
+        
         clientNode[clientKey] = new JsonObject
         {
+            ["user_key"] = userKey, // NEW: store the actual userKey
             ["parent_acct"] = accName,
             ["account_name"] = userObj["name"]?.ToString() ?? "",
             ["act_exp"] = accountExpiry.ToString(),
@@ -266,9 +268,9 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             ["telegram_chat_id"] = "",
             ["discord_url"] = ""
         };
-
+        
         await PutJson($"{firebaseDb}/client.json", clientNode);
-
+        
         // ===== RESPONSE =====
         return Results.Json(new
         {
@@ -276,17 +278,6 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             account_created = true,
             backup_code = backupCode
         });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
-    }
-});
-
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
     try
