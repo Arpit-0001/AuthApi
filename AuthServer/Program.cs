@@ -15,7 +15,7 @@ string firebaseDb =
 
 
 // Call this after app.Build() but before app.Run()
-var cleanupTimer = new Timer(600000); // 10 minutes = 600,000 ms
+var cleanupTimer = new System.Timers.Timer(600000); // 10 minutes
 cleanupTimer.Elapsed += async (sender, e) =>
 {
     await CleanupExpiredAccountsAndSessions();
@@ -31,8 +31,10 @@ async Task CleanupExpiredAccountsAndSessions()
     var sessionsNode = await GetJson($"{firebaseDb}/sessions.json") as JsonObject;
     if (sessionsNode != null)
     {
-        foreach (var s in sessionsNode.Keys.ToList())
+        foreach (var s in sessionsNode!.AsObject())
         {
+            string key = s.Key;
+            var value = s.Value;
             long expiry = 0;
             if (sessionsNode[s]?["s_expiry"] != null)
             {
