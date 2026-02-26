@@ -152,7 +152,6 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
     try
     {
         JsonObject? body;
-
         try
         {
             body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
@@ -169,16 +168,13 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string accName = body["account_name"]?.ToString() ?? "";
         string accPass = body["account_password"]?.ToString() ?? "";
 
-        if (string.IsNullOrEmpty(session) || string.IsNullOrEmpty(accName) || string.IsNullOrEmpty(accPass))
+        if (session == "" || accName == "" || accPass == "")
         {
             return Results.Json(new { success = false });
         }
 
-        // ======================================================
-        // VERIFY SESSION
-        // ======================================================
+        // ===== VERIFY SESSION =====
         var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
-
         if (sessionNode == null)
             return Results.Json(new { success = false, reason = "invalid_session" });
 
@@ -196,9 +192,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string belong = sessionNode["belong_user"]!.ToString();
         string userKey = belong[..belong.IndexOf('_')];
 
-        // ======================================================
-        // LOAD USER
-        // ======================================================
+        // ===== LOAD USER =====
         var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
         if (userNode == null)
             return Results.Json(new { success = false });
@@ -214,43 +208,71 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
                 int.TryParse(mv.ToString(), out maxAccounts);
         }
 
-        int currentAccounts = accountsNode.Count;
-
-        // ======================================================
-        // LIMIT CHECK
-        // ======================================================
-        if (currentAccounts >= maxAccounts)
-            return Results.Json(new { success = false, reason = "account_limit_reached" });
-
-        // ======================================================
-        // DUPLICATE USERNAME CHECK
-        // ======================================================
-        foreach (var acc in accountsNode)
+        // ===== CHECK FOR DUPLICATE NAME =====
+        if (accountsNode.Values.Any(a => a?["account_name"]?.GetValue<string>() == accName))
         {
-            string existingName = acc.Value!["account_name"]?.ToString() ?? "";
-            if (existingName.Equals(accName, StringComparison.OrdinalIgnoreCase))
-            {
-                return Results.Json(new { success = false, reason = "name_present" });
-            }
+            return Results.Json(new { success = false, reason = "name_present" });
         }
 
-        // ======================================================
-        // CREATE ACCOUNT
-        // ======================================================
+        int currentAccounts = accountsNode.Count;
+        if (currentAccounts >= maxAccounts)
+        {
+            return Results.Json(new { success = false, reason = "account_limit_reached" });
+        }
+
+        // ===== CREATE ACCOUNT =====
         string newKey = "account" + (currentAccounts + 1);
+        long accountExpiry = now + 30 * 24 * 3600; // Example: 30 days expiry
         accountsNode[newKey] = new JsonObject
         {
             ["account_name"] = accName,
-            ["account_password"] = accPass
+            ["account_password"] = accPass,
+            ["s_expiry"] = accountExpiry,
+            ["typ"] = userObj["status"]?["typ"]?.ToString() ?? "User",
+            ["sub"] = userObj["status"]?["sub"]?.ToString() ?? "core"
         };
 
         await PutJson($"{firebaseDb}/users/{userKey}/accounts.json", accountsNode);
 
-        return Results.Json(new { success = true, account_created = true });
+        // ===== CREATE CLIENT ENTRY =====
+        var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
+        string clientKey = "client" + (clientNode.Count + 1);
+
+        // Generate random backup code: XXXX-XXXX-XXXX-XXXX
+        string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
+            Random.Shared.Next(1000, 9999).ToString()
+        ));
+
+        clientNode[clientKey] = new JsonObject
+        {
+            ["parent_acct"] = accName,
+            ["account_name"] = userObj["name"]?.ToString() ?? "",
+            ["act_exp"] = accountExpiry.ToString(),
+            ["backup"] = backupCode,
+            ["typ"] = accountsNode[newKey]["typ"]?.ToString() ?? "User",
+            ["sub"] = accountsNode[newKey]["sub"]?.ToString() ?? "core",
+            ["telegram_bot_id"] = "",
+            ["telegram_chat_id"] = "",
+            ["discord_url"] = ""
+        };
+
+        await PutJson($"{firebaseDb}/client.json", clientNode);
+
+        // ===== RESPONSE =====
+        return Results.Json(new
+        {
+            success = true,
+            account_created = true,
+            backup_code = backupCode
+        });
     }
     catch (Exception ex)
     {
-        return Results.Json(new { success = false, error = ex.Message });
+        return Results.Json(new
+        {
+            success = false,
+            error = ex.Message
+        });
     }
 });
 
