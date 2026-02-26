@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-
+using System.Timers;
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
@@ -13,8 +13,6 @@ string firebaseDb =
     Environment.GetEnvironmentVariable("FIREBASE_DB_URL")!
     .TrimEnd('/');
 
-
-using System.Timers;
 
 // Call this after app.Build() but before app.Run()
 var cleanupTimer = new Timer(600000); // 10 minutes = 600,000 ms
