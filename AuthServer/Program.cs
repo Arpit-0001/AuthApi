@@ -245,65 +245,235 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         await PutJson($"{firebaseDb}/users/{userKey}/accounts.json", accountsNode);
 
         // ===== CREATE CLIENT ENTRY =====
-        var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
-        string clientKey = "client" + (clientNode.Count + 1);
+// ===== CREATE CLIENT ENTRY =====
+var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
+string clientKey = "client" + (clientNode.Count + 1);
 
-        // Determine subscription tier and number of allowed slots
-        string subTier = userObj["status"]?["sub"]?.ToString() ?? "core";
-        int maxSlots = subTier switch
-        {
-            "prime"  => 2,
-            "abyss"  => 4,
-            _        => 1   // core or unknown
-        };
+// Determine subscription tier
+string subTier = userObj["status"]?["sub"]?.ToString() ?? "core";
 
-        // Generate random backup code: XXXX-XXXX-XXXX-XXXX
-        string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
-            Random.Shared.Next(1000, 9999).ToString()
-        ));
+// Notification slots (unchanged)
+int maxNotifSlots = subTier switch
+{
+    "prime"  => 2,
+    "abyss"  => 4,
+    _        => 1
+};
 
-        var clientObj = new JsonObject
-        {
-            ["user_key"]     = userKey,
-            ["parent_acct"]  = accName,
-            ["account_name"] = userObj["name"]?.ToString() ?? "",
-            ["act_exp"]      = accountExpiry.ToString(),
-            ["backup"]       = backupCode,
-            ["typ"]          = accountsNode[newKey]["typ"]?.ToString() ?? "User",
-            ["sub"]          = subTier,
-            ["max_slots"]    = maxSlots  // helpful for client & future validation
-        };
+// Crypto coin groups (as per your specification)
+int maxCryptoGroups = subTier switch
+{
+    "prime"  => 15,
+    "abyss"  => 30,
+    _        => 5   // core
+};
 
-        // Initialize allowed notification slots
-        for (int i = 1; i <= maxSlots; i++)
-        {
-            string suffix = i.ToString();
-            clientObj[$"telegram_bot_id{suffix}"]  = "";
-            clientObj[$"telegram_chat_id{suffix}"] = "";
-            clientObj[$"discord_url{suffix}"]      = "";
-        }
+// Generate backup code
+string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
+    Random.Shared.Next(1000, 9999).ToString()
+));
 
-        clientNode[clientKey] = clientObj;
-        await PutJson($"{firebaseDb}/client.json", clientNode);
+var clientObj = new JsonObject
+{
+    ["user_key"]         = userKey,
+    ["parent_acct"]      = accName,
+    ["account_name"]     = userObj["name"]?.ToString() ?? "",
+    ["act_exp"]          = accountExpiry.ToString(),
+    ["backup"]           = backupCode,
+    ["typ"]              = accountsNode[newKey]["typ"]?.ToString() ?? "User",
+    ["sub"]              = subTier,
+    ["max_notif_slots"]  = maxNotifSlots,
+    ["max_crypto_groups"]= maxCryptoGroups   // optional - can be used by client/UI
+};
 
-        // ===== RESPONSE =====
-        return Results.Json(new
-        {
-            success = true,
-            account_created = true,
-            backup_code = backupCode,
-            max_notification_slots = maxSlots
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
-    }
-});
+// Initialize notification slots
+for (int i = 1; i <= maxNotifSlots; i++)
+{
+    string suffix = i.ToString();
+    clientObj[$"telegram_bot_id{suffix}"]  = "";
+    clientObj[$"telegram_chat_id{suffix}"] = "";
+    clientObj[$"discord_url{suffix}"]      = "";
+}
+
+// Initialize crypto-adr object
+var cryptoAdr = new JsonObject();
+
+// ───────────────────────────────────────────────
+// Coin 1 – Bitcoin (all plans)
+if (maxCryptoGroups >= 1)
+{
+    cryptoAdr["btc_legacy"]   = "";
+    cryptoAdr["btc_p2sh"]     = "";
+    cryptoAdr["btc_bech32"]   = "";
+    cryptoAdr["btc_taproot"]  = "";
+    cryptoAdr["btc_lightning"]= "";
+}
+
+// ───────────────────────────────────────────────
+// Coin 2 – Ethereum family (all plans)
+if (maxCryptoGroups >= 2)
+{
+    cryptoAdr["eth_mainnet"]  = "";
+    cryptoAdr["eth_arbitrum"] = "";
+    cryptoAdr["eth_optimism"] = "";
+    cryptoAdr["eth_base"]     = "";
+    cryptoAdr["eth_scroll"]   = "";
+}
+
+// ───────────────────────────────────────────────
+// Coin 3 – Tether / USDT (all plans)
+if (maxCryptoGroups >= 3)
+{
+    cryptoAdr["usdt_erc20"]    = "";
+    cryptoAdr["usdt_trc20"]    = "";
+    cryptoAdr["usdt_bep20"]    = "";
+    cryptoAdr["usdt_polygon"]  = "";
+    cryptoAdr["usdt_solana"]   = "";
+    cryptoAdr["usdt_avalanche"]= "";
+    cryptoAdr["usdt_omni"]     = "";
+}
+
+// ───────────────────────────────────────────────
+// Coin 4 – USD Coin / USDC (all plans)
+if (maxCryptoGroups >= 4)
+{
+    cryptoAdr["usdc_erc20"]    = "";
+    cryptoAdr["usdc_solana"]   = "";
+    cryptoAdr["usdc_polygon"]  = "";
+    cryptoAdr["usdc_arbitrum"] = "";
+    cryptoAdr["usdc_base"]     = "";
+    cryptoAdr["usdc_stellar"]  = "";
+}
+
+// ───────────────────────────────────────────────
+// Coin 5 – BNB (all plans)
+if (maxCryptoGroups >= 5)
+{
+    cryptoAdr["bnb_bep2"]  = "";
+    cryptoAdr["bnb_bep20"] = "";
+    cryptoAdr["bnb_opbnb"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 6: Tron
+if (maxCryptoGroups >= 6)
+{
+    cryptoAdr["trx_mainnet"] = "";
+    cryptoAdr["trx_trc10"]   = "";
+    cryptoAdr["trx_trc20"]   = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 7: Solana
+if (maxCryptoGroups >= 7)
+{
+    cryptoAdr["sol_mainnet"] = "";
+    cryptoAdr["sol_spl"]     = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 8: Litecoin
+if (maxCryptoGroups >= 8)
+{
+    cryptoAdr["ltc_legacy"] = "";
+    cryptoAdr["ltc_script"] = "";
+    cryptoAdr["ltc_bech32"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 9: Ripple / XRP
+if (maxCryptoGroups >= 9)
+{
+    cryptoAdr["xrp_mainnet"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 10: Dogecoin
+if (maxCryptoGroups >= 10)
+{
+    cryptoAdr["doge_legacy"] = "";
+    cryptoAdr["doge_script"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 11: Avalanche
+if (maxCryptoGroups >= 11)
+{
+    cryptoAdr["avax_xchain"]  = "";
+    cryptoAdr["avax_cchain"]  = "";
+    cryptoAdr["avax_pchain"]  = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 12: Cardano
+if (maxCryptoGroups >= 12)
+{
+    cryptoAdr["ada_wallet"] = "";
+    cryptoAdr["ada_stake"]  = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 13: Polkadot
+if (maxCryptoGroups >= 13)
+{
+    cryptoAdr["dot_mainnet"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 14: Toncoin
+if (maxCryptoGroups >= 14)
+{
+    cryptoAdr["ton_wallet"] = "";
+}
+
+// ───────────────────────────────────────────────
+// Prime + Abyss – Coin 15: Monero
+if (maxCryptoGroups >= 15)
+{
+    cryptoAdr["xmr_standard"]    = "";
+    cryptoAdr["xmr_subaddress"]  = "";
+    cryptoAdr["xmr_integrated"]  = "";
+}
+
+// ───────────────────────────────────────────────
+// Abyss only – remaining coins (16–30)
+if (maxCryptoGroups >= 16)
+{
+    cryptoAdr["dash_mainnet"]     = "";
+    cryptoAdr["zec_transparent"]  = "";
+    cryptoAdr["zec_shielded"]     = "";
+    cryptoAdr["xlm_mainnet"]      = "";
+    cryptoAdr["atom_mainnet"]     = "";
+}
+
+if (maxCryptoGroups >= 20)
+{
+    cryptoAdr["xtz_mainnet"]      = "";
+    cryptoAdr["algo_mainnet"]     = "";
+    cryptoAdr["fil_mainnet"]      = "";
+    cryptoAdr["near_mainnet"]     = "";
+    cryptoAdr["hbar_mainnet"]     = "";
+}
+
+if (maxCryptoGroups >= 25)
+{
+    cryptoAdr["terra_mainnet"]    = "";
+    cryptoAdr["inj_mainnet"]      = "";
+    cryptoAdr["scrt_mainnet"]     = "";
+    cryptoAdr["kava_mainnet"]     = "";
+    cryptoAdr["cro_mainnet"]      = "";
+}
+
+if (maxCryptoGroups >= 30)
+{
+    cryptoAdr["harmony_one"]      = "";
+    // Add more if needed...
+}
+
+clientObj["crypto-adr"] = cryptoAdr;
+
+clientNode[clientKey] = clientObj;
+await PutJson($"{firebaseDb}/client.json", clientNode);
     
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
