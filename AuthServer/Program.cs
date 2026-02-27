@@ -1076,4 +1076,146 @@ app.MapPost("/raven/update-data", async (HttpContext ctx) =>
     }
 });
 
+app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
+{
+    try
+    {
+        JsonObject? body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        if (body == null)
+            return Results.Json(new { success = false, reason = "invalid_json" });
+
+        // ─── Authentication (two options: userkey+password OR session) ───
+        string? userKey = null;
+        string? password = body["password"]?.ToString();
+
+        // Option 1: userkey + password (like update-data)
+        if (body["userkey"] != null)
+        {
+            userKey = body["userkey"]?.ToString();
+            if (string.IsNullOrWhiteSpace(userKey) || string.IsNullOrWhiteSpace(password))
+                return Results.Json(new { success = false, reason = "missing_userkey_or_password" });
+
+            var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
+            if (userNode == null)
+                return Results.Json(new { success = false, reason = "user_not_found" });
+
+            var userObj = userNode.AsObject();
+            if (userObj["password"]?.ToString() != password)
+                return Results.Json(new { success = false, reason = "incorrect_password" });
+        }
+        // Option 2: session (like /client)
+        else if (body["session"] != null)
+        {
+            string session = body["session"]!.ToString();
+            var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
+            if (sessionNode == null)
+                return Results.Json(new { success = false, reason = "invalid_session" });
+
+            long sExpiry = 0;
+            if (sessionNode["s_expiry"] != null)
+                long.TryParse(sessionNode["s_expiry"].ToString(), out sExpiry);
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            if (sExpiry <= now)
+                return Results.Json(new { success = false, reason = "session_expired" });
+
+            string belongUser = sessionNode["belong_user"]!.ToString();
+            userKey = belongUser[..belongUser.IndexOf('_')];
+        }
+        else
+        {
+            return Results.Json(new { success = false, reason = "missing_authentication" });
+        }
+
+        // ─── Get user's tier to know allowed fields ───
+        var userNodeCheck = await GetJson($"{firebaseDb}/users/{userKey}.json");
+        if (userNodeCheck == null)
+            return Results.Json(new { success = false, reason = "user_not_found" });
+
+        var userObjCheck = userNodeCheck.AsObject();
+        string subTier = userObjCheck["status"]?["sub"]?.ToString() ?? "core";
+        int maxCryptoGroups = subTier switch
+        {
+            "prime"  => 15,
+            "abyss"  => 30,
+            _        => 5
+        };
+
+        // ─── Find the client entry ───
+        var clientsNode = await GetJson($"{firebaseDb}/client.json") as JsonObject;
+        if (clientsNode == null)
+            return Results.Json(new { success = false, reason = "no_client_data" });
+
+        JsonObject? targetClient = null;
+        string? clientKeyFound = null;
+
+        foreach (var kvp in clientsNode)
+        {
+            var c = kvp.Value?.AsObject();
+            if (c?["user_key"]?.ToString() == userKey)
+            {
+                targetClient = c;
+                clientKeyFound = kvp.Key;
+                break;
+            }
+        }
+
+        if (targetClient == null)
+            return Results.Json(new { success = false, reason = "client_not_found" });
+
+        // Make sure crypto-adr exists
+        var cryptoAdr = targetClient["crypto-adr"] as JsonObject;
+        if (cryptoAdr == null)
+        {
+            cryptoAdr = new JsonObject();
+            targetClient["crypto-adr"] = cryptoAdr;
+        }
+
+        // ─── Apply updates – only allowed fields ───
+        var updatedFields = new List<string>();
+
+        foreach (var prop in body)
+        {
+            string field = prop.Key;
+            if (field == "userkey" || field == "password" || field == "session") continue;
+
+            // Basic check: must be a string
+            if (prop.Value is JsonValue val && val.TryGetValue<string>(out var newAddress))
+            {
+                if (!string.IsNullOrWhiteSpace(newAddress))
+                {
+                    // Optional: very basic validation (you can expand with regex later)
+                    bool looksValid = newAddress.Length >= 26 && newAddress.Length <= 100 &&
+                                     (newAddress.StartsWith("1") || newAddress.StartsWith("3") ||
+                                      newAddress.StartsWith("bc1") || newAddress.StartsWith("0x") ||
+                                      newAddress.StartsWith("T") || newAddress.StartsWith("lnbc"));
+
+                    if (looksValid)
+                    {
+                        cryptoAdr[field] = newAddress;
+                        updatedFields.Add(field);
+                    }
+                }
+            }
+        }
+
+        if (updatedFields.Count == 0)
+            return Results.Json(new { success = false, reason = "no_valid_fields_updated" });
+
+        // Save back
+        await PutJson($"{firebaseDb}/client/{clientKeyFound}.json", targetClient);
+
+        return Results.Json(new
+        {
+            success = true,
+            message = "crypto_addresses_updated",
+            updated_fields = updatedFields.ToArray()
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message });
+    }
+});
+
 app.Run();
