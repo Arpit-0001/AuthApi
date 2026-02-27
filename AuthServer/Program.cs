@@ -1098,13 +1098,12 @@ app.MapPost("/raven/update-data", async (HttpContext ctx) =>
 
 app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
 {
+    string? userKey = null;
     try
     {
         JsonObject? body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
         if (body == null)
             return Results.Json(new { success = false, reason = "invalid_json" });
-
-        string? userKey = null;
 
         // ─── Authentication: prefer session, fallback to userkey+password ───
         if (body["session"]?.ToString() is string session && !string.IsNullOrWhiteSpace(session))
