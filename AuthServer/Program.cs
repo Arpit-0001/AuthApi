@@ -690,4 +690,150 @@ static async Task<int> DecreaseAttempts(string hwid)
     return remain;
 }
 
+
+app.MapPost("/raven/change-password", async (HttpContext ctx) =>
+{
+    try
+    {
+        JsonObject? body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        if (body == null)
+        {
+            return Results.Json(new { success = false, reason = "invalid_json" });
+        }
+
+        string? userKey      = body["userkey"]?.ToString();
+        string? oldPassword  = body["old_password"]?.ToString();
+        string? newPassword  = body["new_password"]?.ToString();
+        string? backupCode   = body["backup"]?.ToString();
+
+        if (string.IsNullOrWhiteSpace(userKey) ||
+            string.IsNullOrWhiteSpace(oldPassword) ||
+            string.IsNullOrWhiteSpace(newPassword) ||
+            string.IsNullOrWhiteSpace(backupCode))
+        {
+            return Results.Json(new { success = false, reason = "missing_required_fields" });
+        }
+
+        // ───────────────────────────────────────────────
+        // 1. Load the user
+        // ───────────────────────────────────────────────
+        var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
+        if (userNode == null)
+        {
+            return Results.Json(new { success = false, reason = "user_not_found" });
+        }
+
+        var userObj = userNode.AsObject();
+
+        string dbMainPassword = userObj["password"]?.ToString() ?? "";
+        var accountsNode = userObj["accounts"] as JsonObject;
+
+        if (accountsNode == null || accountsNode.Count == 0)
+        {
+            return Results.Json(new { success = false, reason = "no_accounts" });
+        }
+
+        // ───────────────────────────────────────────────
+        // 2. Find matching account + verify old password
+        // ───────────────────────────────────────────────
+        JsonObject? targetAccount = null;
+        string? targetAccountKey = null;
+
+        foreach (var kvp in accountsNode)
+        {
+            var acc = kvp.Value?.AsObject();
+            if (acc == null) continue;
+
+            string? accName   = acc["account_name"]?.ToString();
+            string? accPass   = acc["account_password"]?.ToString();
+
+            // We compare against the stored plain password in accounts
+            if (accPass == oldPassword)
+            {
+                targetAccount = acc;
+                targetAccountKey = kvp.Key;
+                break;
+            }
+        }
+
+        if (targetAccount == null)
+        {
+            return Results.Json(new { success = false, reason = "old_password_incorrect" });
+        }
+
+        // ───────────────────────────────────────────────
+        // 3. Verify backup code (from /client)
+        // ───────────────────────────────────────────────
+        var clientsNode = await GetJson($"{firebaseDb}/client.json") as JsonObject;
+        if (clientsNode == null)
+        {
+            return Results.Json(new { success = false, reason = "client_data_missing" });
+        }
+
+        bool backupValid = false;
+
+        foreach (var kvp in clientsNode)
+        {
+            var client = kvp.Value?.AsObject();
+            if (client == null) continue;
+
+            string? cUserKey  = client["user_key"]?.ToString();
+            string? cBackup   = client["backup"]?.ToString();
+            string? cParent   = client["parent_acct"]?.ToString();
+
+            // Usually parent_acct == account_name
+            if (cUserKey == userKey &&
+                cBackup == backupCode &&
+                cParent == targetAccount["account_name"]?.ToString())
+            {
+                backupValid = true;
+                break;
+            }
+        }
+
+        if (!backupValid)
+        {
+            return Results.Json(new { success = false, reason = "invalid_backup_code" });
+        }
+
+        // ───────────────────────────────────────────────
+        // 4. Update password in two places
+        //    a) user → accounts → {key} → account_password
+        //    b) user → password   (main login password)
+        // ───────────────────────────────────────────────
+        targetAccount["account_password"] = newPassword;
+        userObj["password"] = newPassword;
+
+        // Write back accounts subtree
+        await PutJson(
+            $"{firebaseDb}/users/{userKey}/accounts.json",
+            accountsNode
+        );
+
+        // Write back main user password
+        await PutJson(
+            $"{firebaseDb}/users/{userKey}/password.json",
+            JsonValue.Create(newPassword)
+        );
+
+        // Optional: you could also update client backup code or invalidate it here
+        // (many systems do one-time recovery → delete or mark used)
+
+        return Results.Json(new
+        {
+            success = true,
+            message = "password_changed_successfully",
+            changed_for_account = targetAccount["account_name"]?.ToString()
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            error = ex.Message
+        });
+    }
+});
+
 app.Run();
