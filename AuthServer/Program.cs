@@ -249,46 +249,53 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         // ===== CREATE CLIENT ENTRY =====
         var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
         string clientKey = "client" + (clientNode.Count + 1);
-
+        
+        // Determine subscription tier and number of allowed slots
+        string subTier = userObj["status"]?["sub"]?.ToString() ?? "core";
+        int maxSlots = subTier switch
+        {
+            "prime"  => 2,
+            "abyss"  => 4,
+            _        => 1   // core or unknown → 1 slot
+        };
+        
         // Generate random backup code: XXXX-XXXX-XXXX-XXXX
         string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
             Random.Shared.Next(1000, 9999).ToString()
         ));
-
-        clientNode[clientKey] = new JsonObject
+        
+        var clientObj = new JsonObject
         {
-            ["user_key"] = userKey, // store the actual userKey
-            ["parent_acct"] = accName,
+            ["user_key"]     = userKey,
+            ["parent_acct"]  = accName,
             ["account_name"] = userObj["name"]?.ToString() ?? "",
-            ["act_exp"] = accountExpiry.ToString(),
-            ["backup"] = backupCode,
-            ["typ"] = accountsNode[newKey]["typ"]?.ToString() ?? "User",
-            ["sub"] = accountsNode[newKey]["sub"]?.ToString() ?? "core",
-            ["telegram_bot_id"] = "",
-            ["telegram_chat_id"] = "",
-            ["discord_url"] = ""
+            ["act_exp"]      = accountExpiry.ToString(),
+            ["backup"]       = backupCode,
+            ["typ"]          = accountsNode[newKey]["typ"]?.ToString() ?? "User",
+            ["sub"]          = subTier,
+            ["max_slots"]    = maxSlots   // optional: store for easier future checks
         };
-
+        
+        // Initialize allowed slots (empty strings)
+        for (int i = 1; i <= maxSlots; i++)
+        {
+            string suffix = i.ToString();
+            clientObj[$"telegram_bot_id{suffix}"]  = "";
+            clientObj[$"telegram_chat_id{suffix}"] = "";
+            clientObj[$"discord_url{suffix}"]      = "";
+        }
+        
+        clientNode[clientKey] = clientObj;
         await PutJson($"{firebaseDb}/client.json", clientNode);
-
+        
         // ===== RESPONSE =====
         return Results.Json(new
         {
             success = true,
             account_created = true,
-            backup_code = backupCode
+            backup_code = backupCode,
+            max_notification_slots = maxSlots   // optional: inform client
         });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
-    }
-});
-    
 
     
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
@@ -833,6 +840,109 @@ app.MapPost("/raven/change-password", async (HttpContext ctx) =>
             success = false,
             error = ex.Message
         });
+    }
+});
+
+app.MapPost("/raven/update-data", async (HttpContext ctx) =>
+{
+    try
+    {
+        JsonObject? body = await ctx.Request.ReadFromJsonAsync<JsonObject>();
+        if (body == null)
+            return Results.Json(new { success = false, reason = "invalid_json" });
+
+        string? userKey  = body["userkey"]?.ToString();
+        string? password = body["password"]?.ToString();
+
+        if (string.IsNullOrWhiteSpace(userKey) || string.IsNullOrWhiteSpace(password))
+            return Results.Json(new { success = false, reason = "missing_userkey_or_password" });
+
+        // 1. Load user & verify password
+        var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
+        if (userNode == null)
+            return Results.Json(new { success = false, reason = "user_not_found" });
+
+        var userObj = userNode.AsObject();
+        if (userObj["password"]?.ToString() != password)
+            return Results.Json(new { success = false, reason = "incorrect_password" });
+
+        string subTier = userObj["status"]?["sub"]?.ToString() ?? "core";
+        int maxSlots = subTier switch
+        {
+            "prime"  => 2,
+            "abyss"  => 4,
+            _        => 1
+        };
+
+        // 2. Find the client entry
+        var clientsNode = await GetJson($"{firebaseDb}/client.json") as JsonObject;
+        if (clientsNode == null)
+            return Results.Json(new { success = false, reason = "no_client_data" });
+
+        JsonObject? targetClient = null;
+        string? clientKeyFound = null;
+
+        foreach (var kvp in clientsNode)
+        {
+            var c = kvp.Value?.AsObject();
+            if (c?["user_key"]?.ToString() == userKey)
+            {
+                targetClient = c;
+                clientKeyFound = kvp.Key;
+                break;
+            }
+        }
+
+        if (targetClient == null)
+            return Results.Json(new { success = false, reason = "client_not_found_for_user" });
+
+        // 3. Collect and validate updates
+        var updatedFields = new List<string>();
+
+        // Helper to update numbered field
+        void TryUpdate(string fieldPrefix, string payloadKey)
+        {
+            if (body[payloadKey] is JsonValue val && val.GetValueKind() == JsonValueKind.String)
+            {
+                string value = val.GetValue<string>()!;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    int slotNum = int.TryParse(payloadKey.Replace(fieldPrefix, ""), out int n) ? n : 0;
+                    if (slotNum >= 1 && slotNum <= maxSlots)
+                    {
+                        targetClient[$"{fieldPrefix}{slotNum}"] = value;
+                        updatedFields.Add(payloadKey);
+                    }
+                }
+            }
+        }
+
+        // Process all possible numbered fields
+        for (int i = 1; i <= maxSlots; i++)
+        {
+            string suffix = i.ToString();
+            TryUpdate("telegram_bot_id",  $"telegram_bot_id{suffix}");
+            TryUpdate("telegram_chat_id", $"telegram_chat_id{suffix}");
+            TryUpdate("discord_url",      $"discord_url{suffix}");
+        }
+
+        if (updatedFields.Count == 0)
+            return Results.Json(new { success = false, reason = "no_valid_updates_provided_or_slot_exceeded" });
+
+        // 4. Save
+        await PutJson($"{firebaseDb}/client/{clientKeyFound}.json", targetClient);
+
+        return Results.Json(new
+        {
+            success = true,
+            message = "notification_data_updated",
+            updated_fields = updatedFields.ToArray(),
+            max_slots = maxSlots
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message });
     }
 });
 
