@@ -296,7 +296,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             backup_code = backupCode,
             max_notification_slots = maxSlots   // optional: inform client
         });
-
+    }
     
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
