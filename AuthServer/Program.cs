@@ -144,9 +144,6 @@ app.MapGet("/", () => "Raven Auth Running");
 // POST /raven/auth
 // ======================================================
 
-// ======================================================
-// POST /raven/create_account
-// ======================================================
 
 app.MapPost("/raven/create_account", async (HttpContext ctx) =>
 {
@@ -912,13 +909,13 @@ app.MapPost("/raven/update-data", async (HttpContext ctx) =>
         // Helper to update numbered field
         void TryUpdate(string fieldPrefix, string payloadKey)
         {
-            if (body[payloadKey] is JsonValue val && val.GetValueKind() == JsonValueKind.String)
+            if (body[payloadKey] is JsonValue val && val.TryGetValue<string>(out var value))
             {
-                string value = val.GetValue<string>()!;
                 if (!string.IsNullOrWhiteSpace(value))
                 {
-                    int slotNum = int.TryParse(payloadKey.Replace(fieldPrefix, ""), out int n) ? n : 0;
-                    if (slotNum >= 1 && slotNum <= maxSlots)
+                    // Extract slot number from key (e.g. "discord_url2" → 2)
+                    if (int.TryParse(payloadKey.Replace(fieldPrefix, ""), out int slotNum) &&
+                        slotNum >= 1 && slotNum <= maxSlots)
                     {
                         targetClient[$"{fieldPrefix}{slotNum}"] = value;
                         updatedFields.Add(payloadKey);
@@ -926,6 +923,35 @@ app.MapPost("/raven/update-data", async (HttpContext ctx) =>
                 }
             }
         }
+
+        // Check all possible slots
+        for (int i = 1; i <= maxSlots; i++)
+        {
+            string suffix = i.ToString();
+            TryUpdate("telegram_bot_id",  $"telegram_bot_id{suffix}");
+            TryUpdate("telegram_chat_id", $"telegram_chat_id{suffix}");
+            TryUpdate("discord_url",      $"discord_url{suffix}");
+        }
+
+        if (updatedFields.Count == 0)
+            return Results.Json(new { success = false, reason = "no_valid_updates_provided_or_slot_exceeded" });
+
+        // 4. Save updated client
+        await PutJson($"{firebaseDb}/client/{clientKeyFound}.json", targetClient);
+
+        return Results.Json(new
+        {
+            success = true,
+            message = "notification_data_updated",
+            updated_fields = updatedFields.ToArray(),
+            max_slots = maxSlots
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message });
+    }
+});
 
         // Process all possible numbered fields
         for (int i = 1; i <= maxSlots; i++)
