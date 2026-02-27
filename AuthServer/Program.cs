@@ -169,7 +169,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string accName = body["account_name"]?.ToString() ?? "";
         string accPass = body["account_password"]?.ToString() ?? "";
 
-        if (session == "" || accName == "" || accPass == "")
+        if (string.IsNullOrEmpty(session) || string.IsNullOrEmpty(accName) || string.IsNullOrEmpty(accPass))
         {
             return Results.Json(new { success = false });
         }
@@ -234,14 +234,15 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
 
         // ===== CREATE ACCOUNT =====
         string newKey = "account" + (currentAccounts + 1);
-        long accountExpiry = now + 30 * 24 * 3600; // Example: 30 days expiry
+        long accountExpiry = now + 30 * 24 * 3600; // 30 days
+
         accountsNode[newKey] = new JsonObject
         {
-            ["account_name"] = accName,
+            ["account_name"]     = accName,
             ["account_password"] = accPass,
-            ["s_expiry"] = accountExpiry,
-            ["typ"] = userObj["status"]?["typ"]?.ToString() ?? "User",
-            ["sub"] = userObj["status"]?["sub"]?.ToString() ?? "core"
+            ["s_expiry"]         = accountExpiry,
+            ["typ"]              = userObj["status"]?["typ"]?.ToString() ?? "User",
+            ["sub"]              = userObj["status"]?["sub"]?.ToString() ?? "core"
         };
 
         await PutJson($"{firebaseDb}/users/{userKey}/accounts.json", accountsNode);
@@ -249,21 +250,21 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         // ===== CREATE CLIENT ENTRY =====
         var clientNode = await GetJson($"{firebaseDb}/client.json") as JsonObject ?? new JsonObject();
         string clientKey = "client" + (clientNode.Count + 1);
-        
+
         // Determine subscription tier and number of allowed slots
         string subTier = userObj["status"]?["sub"]?.ToString() ?? "core";
         int maxSlots = subTier switch
         {
             "prime"  => 2,
             "abyss"  => 4,
-            _        => 1   // core or unknown → 1 slot
+            _        => 1   // core or unknown
         };
-        
+
         // Generate random backup code: XXXX-XXXX-XXXX-XXXX
         string backupCode = string.Join("-", Enumerable.Range(0, 4).Select(_ =>
             Random.Shared.Next(1000, 9999).ToString()
         ));
-        
+
         var clientObj = new JsonObject
         {
             ["user_key"]     = userKey,
@@ -273,10 +274,10 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             ["backup"]       = backupCode,
             ["typ"]          = accountsNode[newKey]["typ"]?.ToString() ?? "User",
             ["sub"]          = subTier,
-            ["max_slots"]    = maxSlots   // optional: store for easier future checks
+            ["max_slots"]    = maxSlots  // helpful for client & future validation
         };
-        
-        // Initialize allowed slots (empty strings)
+
+        // Initialize allowed notification slots
         for (int i = 1; i <= maxSlots; i++)
         {
             string suffix = i.ToString();
@@ -284,19 +285,28 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             clientObj[$"telegram_chat_id{suffix}"] = "";
             clientObj[$"discord_url{suffix}"]      = "";
         }
-        
+
         clientNode[clientKey] = clientObj;
         await PutJson($"{firebaseDb}/client.json", clientNode);
-        
+
         // ===== RESPONSE =====
         return Results.Json(new
         {
             success = true,
             account_created = true,
             backup_code = backupCode,
-            max_notification_slots = maxSlots   // optional: inform client
+            max_notification_slots = maxSlots
         });
     }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            error = ex.Message
+        });
+    }
+});
     
 app.MapPost("/raven/auth", async (HttpContext ctx) =>
 {
