@@ -158,7 +158,6 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         {
             return Results.Json(new { success = false });
         }
-
         if (body == null)
             return Results.Json(new { success = false });
 
@@ -167,11 +166,9 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string accPass = body["account_password"]?.ToString() ?? "";
 
         if (string.IsNullOrEmpty(session) || string.IsNullOrEmpty(accName) || string.IsNullOrEmpty(accPass))
-        {
             return Results.Json(new { success = false });
-        }
 
-        // ===== VERIFY SESSION =====
+        // VERIFY SESSION
         var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
         if (sessionNode == null)
             return Results.Json(new { success = false, reason = "invalid_session" });
@@ -190,7 +187,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         string belong = sessionNode["belong_user"]!.ToString();
         string userKey = belong[..belong.IndexOf('_')];
 
-        // ===== LOAD USER =====
+        // LOAD USER
         var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
         if (userNode == null)
             return Results.Json(new { success = false });
@@ -206,7 +203,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
                 int.TryParse(mv.ToString(), out maxAccounts);
         }
 
-        // ===== CHECK FOR DUPLICATE NAME =====
+        // CHECK DUPLICATE NAME
         bool nameExists = false;
         foreach (var kvp in accountsNode)
         {
@@ -217,7 +214,6 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
                 break;
             }
         }
-
         if (nameExists)
             return Results.Json(new { success = false, reason = "name_present" });
 
@@ -225,9 +221,9 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         if (currentAccounts >= maxAccounts)
             return Results.Json(new { success = false, reason = "account_limit_reached" });
 
-        // ===== CREATE ACCOUNT =====
+        // CREATE ACCOUNT
         string newKey = "account" + (currentAccounts + 1);
-        long accountExpiry = now + 30 * 24 * 3600; // 30 days
+        long accountExpiry = now + 30 * 24 * 3600;
 
         accountsNode[newKey] = new JsonObject
         {
@@ -266,15 +262,15 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
 
         var clientObj = new JsonObject
         {
-            ["user_key"]         = userKey,
-            ["parent_acct"]      = accName,
-            ["account_name"]     = userObj["name"]?.ToString() ?? "",
-            ["act_exp"]          = accountExpiry.ToString(),
-            ["backup"]           = backupCode,
-            ["typ"]              = accountsNode[newKey]["typ"]?.ToString() ?? "User",
-            ["sub"]              = subTier,
-            ["max_notif_slots"]  = maxNotifSlots,
-            ["max_crypto_groups"]= maxCryptoGroups
+            ["user_key"]          = userKey,
+            ["parent_acct"]       = accName,
+            ["account_name"]      = userObj["name"]?.ToString() ?? "",
+            ["act_exp"]           = accountExpiry.ToString(),
+            ["backup"]            = backupCode,
+            ["typ"]               = accountsNode[newKey]["typ"]?.ToString() ?? "User",
+            ["sub"]               = subTier,
+            ["max_notif_slots"]   = maxNotifSlots,
+            ["max_crypto_groups"] = maxCryptoGroups
         };
 
         // Notification slots
@@ -286,42 +282,43 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             clientObj[$"discord_url{suffix}"]      = "";
         }
 
-        // Crypto addresses
+        // Crypto addresses – full list as requested
         var cryptoAdr = new JsonObject();
 
-        // Coin 1 – Bitcoin
+        // Coin 1 – Bitcoin (all tiers)
         if (maxCryptoGroups >= 1)
         {
-            cryptoAdr["btc_legacy"]    = "";
-            cryptoAdr["btc_p2sh"]      = "";
-            cryptoAdr["btc_bech32"]    = "";
-            cryptoAdr["btc_taproot"]   = "";
-            cryptoAdr["btc_lightning"] = "";
+            cryptoAdr["btc_legacy"]   = "";
+            cryptoAdr["btc_p2sh"]     = "";
+            cryptoAdr["btc_segwit"]   = "";
+            cryptoAdr["btc_taproot"]  = "";
+            cryptoAdr["btc_lightning"]= "";
         }
 
-        // Coin 2 – Ethereum
+        // Coin 2 – Ethereum family (all tiers)
         if (maxCryptoGroups >= 2)
         {
             cryptoAdr["eth_mainnet"]  = "";
+            cryptoAdr["eth_erc20"]    = "";
             cryptoAdr["eth_arbitrum"] = "";
             cryptoAdr["eth_optimism"] = "";
             cryptoAdr["eth_base"]     = "";
             cryptoAdr["eth_scroll"]   = "";
         }
 
-        // Coin 3 – Tether
+        // Coin 3 – Tether (USDT) (all tiers)
         if (maxCryptoGroups >= 3)
         {
-            cryptoAdr["usdt_erc20"]    = "";
-            cryptoAdr["usdt_trc20"]    = "";
-            cryptoAdr["usdt_bep20"]    = "";
-            cryptoAdr["usdt_polygon"]  = "";
-            cryptoAdr["usdt_solana"]   = "";
-            cryptoAdr["usdt_avalanche"]= "";
-            cryptoAdr["usdt_omni"]     = "";
+            cryptoAdr["usdt_erc20"]     = "";
+            cryptoAdr["usdt_trc20"]     = "";
+            cryptoAdr["usdt_bep20"]     = "";
+            cryptoAdr["usdt_solana"]    = "";
+            cryptoAdr["usdt_polygon"]   = "";
+            cryptoAdr["usdt_avalanche"] = "";
+            cryptoAdr["usdt_omni"]      = "";
         }
 
-        // Coin 4 – USDC
+        // Coin 4 – USD Coin (USDC) (all tiers)
         if (maxCryptoGroups >= 4)
         {
             cryptoAdr["usdc_erc20"]    = "";
@@ -332,7 +329,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             cryptoAdr["usdc_stellar"]  = "";
         }
 
-        // Coin 5 – BNB
+        // Coin 5 – BNB (all tiers)
         if (maxCryptoGroups >= 5)
         {
             cryptoAdr["bnb_bep2"]  = "";
@@ -340,52 +337,70 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             cryptoAdr["bnb_opbnb"] = "";
         }
 
-        // Prime & Abyss extras (6–15)
+        // Coin 6 – Tron (prime+)
         if (maxCryptoGroups >= 6)
         {
             cryptoAdr["trx_mainnet"] = "";
             cryptoAdr["trx_trc10"]   = "";
             cryptoAdr["trx_trc20"]   = "";
         }
+
+        // Coin 7 – Solana (prime+)
         if (maxCryptoGroups >= 7)
         {
             cryptoAdr["sol_mainnet"] = "";
             cryptoAdr["sol_spl"]     = "";
         }
+
+        // Coin 8 – Litecoin (prime+)
         if (maxCryptoGroups >= 8)
         {
             cryptoAdr["ltc_legacy"] = "";
             cryptoAdr["ltc_script"] = "";
-            cryptoAdr["ltc_bech32"] = "";
+            cryptoAdr["ltc_segwit"] = "";
         }
+
+        // Coin 9 – Ripple (prime+)
         if (maxCryptoGroups >= 9)
         {
             cryptoAdr["xrp_mainnet"] = "";
         }
+
+        // Coin 10 – Dogecoin (prime+)
         if (maxCryptoGroups >= 10)
         {
             cryptoAdr["doge_legacy"] = "";
             cryptoAdr["doge_script"] = "";
         }
+
+        // Coin 11 – Avalanche (prime+)
         if (maxCryptoGroups >= 11)
         {
             cryptoAdr["avax_xchain"] = "";
             cryptoAdr["avax_cchain"] = "";
             cryptoAdr["avax_pchain"] = "";
         }
+
+        // Coin 12 – Cardano (prime+)
         if (maxCryptoGroups >= 12)
         {
             cryptoAdr["ada_wallet"] = "";
             cryptoAdr["ada_stake"]  = "";
         }
+
+        // Coin 13 – Polkadot (prime+)
         if (maxCryptoGroups >= 13)
         {
             cryptoAdr["dot_mainnet"] = "";
         }
+
+        // Coin 14 – Toncoin (prime+)
         if (maxCryptoGroups >= 14)
         {
             cryptoAdr["ton_wallet"] = "";
         }
+
+        // Coin 15 – Monero (prime+)
         if (maxCryptoGroups >= 15)
         {
             cryptoAdr["xmr_standard"]   = "";
@@ -393,7 +408,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             cryptoAdr["xmr_integrated"] = "";
         }
 
-        // Abyss extras (16–30) – add as many as you need
+        // Abyss extras (16–30)
         if (maxCryptoGroups >= 16)
         {
             cryptoAdr["dash_mainnet"]     = "";
@@ -401,7 +416,16 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
             cryptoAdr["zec_shielded"]     = "";
             cryptoAdr["xlm_mainnet"]      = "";
             cryptoAdr["atom_mainnet"]     = "";
-            // ... continue for 20, 25, 30 if needed
+            cryptoAdr["xtz_mainnet"]      = "";
+            cryptoAdr["algo_mainnet"]     = "";
+            cryptoAdr["fil_mainnet"]      = "";
+            cryptoAdr["near_mainnet"]     = "";
+            cryptoAdr["hbar_mainnet"]     = "";
+            cryptoAdr["terra_mainnet"]    = "";
+            cryptoAdr["inj_mainnet"]      = "";
+            cryptoAdr["scrt_mainnet"]     = "";
+            cryptoAdr["kava_mainnet"]     = "";
+            cryptoAdr["cro_mainnet"]      = "";
         }
 
         clientObj["crypto-adr"] = cryptoAdr;
@@ -409,7 +433,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
         clientNode[clientKey] = clientObj;
         await PutJson($"{firebaseDb}/client.json", clientNode);
 
-        // ===== RESPONSE =====
+        // RESPONSE
         return Results.Json(new
         {
             success = true,
@@ -421,11 +445,7 @@ app.MapPost("/raven/create_account", async (HttpContext ctx) =>
     }
     catch (Exception ex)
     {
-        return Results.Json(new
-        {
-            success = false,
-            error = ex.Message
-        });
+        return Results.Json(new { success = false, error = ex.Message });
     }
 });
     
@@ -1086,7 +1106,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
 
         string? userKey = null;
 
-        // ─── Authentication: prefer session if present, fallback to userkey+password ───
+        // ─── Authentication: prefer session, fallback to userkey+password ───
         if (body["session"]?.ToString() is string session && !string.IsNullOrWhiteSpace(session))
         {
             var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
@@ -1125,7 +1145,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
             return Results.Json(new { success = false, reason = "missing_authentication" });
         }
 
-        // ─── Load user tier ───
+        // ─── Get user's tier to enforce allowed fields ───
         var userNodeCheck = await GetJson($"{firebaseDb}/users/{userKey}.json");
         if (userNodeCheck == null)
             return Results.Json(new { success = false, reason = "user_not_found" });
@@ -1176,20 +1196,22 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
             if (field is "userkey" or "password" or "session")
                 continue;
 
-            // Only allow string values
+            // Only process string values
             if (prop.Value is JsonValue val && val.TryGetValue<string>(out var newAddress))
             {
                 if (string.IsNullOrWhiteSpace(newAddress))
                     continue;
 
-                // Very basic sanity check (length + common prefixes)
-                // → You should later replace this with proper regex per field
+                // Basic format check (can be improved with regex later)
                 bool looksValid = newAddress.Length is >= 26 and <= 120 &&
-                                 (newAddress.StartsWith("1")   || newAddress.StartsWith("3")   ||
-                                  newAddress.StartsWith("bc1") || newAddress.StartsWith("0x")  ||
-                                  newAddress.StartsWith("T")   || newAddress.StartsWith("lnbc") ||
-                                  newAddress.StartsWith("G")   || newAddress.StartsWith("addr1") ||
-                                  newAddress.StartsWith("EQ")  || newAddress.StartsWith("UQ"));
+                                 (newAddress.StartsWith("1")    || newAddress.StartsWith("3")    ||
+                                  newAddress.StartsWith("bc1")  || newAddress.StartsWith("0x")   ||
+                                  newAddress.StartsWith("T")    || newAddress.StartsWith("lnbc")  ||
+                                  newAddress.StartsWith("G")    || newAddress.StartsWith("addr1") ||
+                                  newAddress.StartsWith("EQ")   || newAddress.StartsWith("UQ")   ||
+                                  newAddress.StartsWith("ltc1") || newAddress.StartsWith("X-")   ||
+                                  newAddress.StartsWith("P-")   || newAddress.StartsWith("4")    ||
+                                  newAddress.StartsWith("8")    || newAddress.StartsWith("bnb"));
 
                 if (looksValid)
                 {
@@ -1198,8 +1220,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
                 }
                 else
                 {
-                    // Optional: log invalid attempt
-                    Console.WriteLine($"Invalid crypto address format for field {field}: {newAddress}");
+                    Console.WriteLine($"[Update-Crypto] Rejected invalid address format → {field}: {newAddress}");
                 }
             }
         }
@@ -1214,12 +1235,13 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
         {
             success = true,
             message = "crypto_addresses_updated",
-            updated_fields = updatedFields.ToArray()
+            updated_fields = updatedFields.ToArray(),
+            tier = subTier
         });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Error in update-crypto: {ex}");
+        Console.WriteLine($"[Update-Crypto Error] User: {userKey ?? "unknown"} | Error: {ex.Message}\n{ex.StackTrace}");
         return Results.Json(new { success = false, error = ex.Message });
     }
 });
