@@ -1084,29 +1084,11 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
         if (body == null)
             return Results.Json(new { success = false, reason = "invalid_json" });
 
-        // ─── Authentication (two options: userkey+password OR session) ───
         string? userKey = null;
-        string? password = body["password"]?.ToString();
 
-        // Option 1: userkey + password (like update-data)
-        if (body["userkey"] != null)
+        // ─── Authentication: prefer session if present, fallback to userkey+password ───
+        if (body["session"]?.ToString() is string session && !string.IsNullOrWhiteSpace(session))
         {
-            userKey = body["userkey"]?.ToString();
-            if (string.IsNullOrWhiteSpace(userKey) || string.IsNullOrWhiteSpace(password))
-                return Results.Json(new { success = false, reason = "missing_userkey_or_password" });
-
-            var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
-            if (userNode == null)
-                return Results.Json(new { success = false, reason = "user_not_found" });
-
-            var userObj = userNode.AsObject();
-            if (userObj["password"]?.ToString() != password)
-                return Results.Json(new { success = false, reason = "incorrect_password" });
-        }
-        // Option 2: session (like /client)
-        else if (body["session"] != null)
-        {
-            string session = body["session"]!.ToString();
             var sessionNode = await GetJson($"{firebaseDb}/sessions/{session}.json");
             if (sessionNode == null)
                 return Results.Json(new { success = false, reason = "invalid_session" });
@@ -1122,12 +1104,28 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
             string belongUser = sessionNode["belong_user"]!.ToString();
             userKey = belongUser[..belongUser.IndexOf('_')];
         }
+        else if (body["userkey"]?.ToString() is string uk && !string.IsNullOrWhiteSpace(uk))
+        {
+            userKey = uk;
+            string? password = body["password"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(password))
+                return Results.Json(new { success = false, reason = "missing_password" });
+
+            var userNode = await GetJson($"{firebaseDb}/users/{userKey}.json");
+            if (userNode == null)
+                return Results.Json(new { success = false, reason = "user_not_found" });
+
+            var userObj = userNode.AsObject();
+            if (userObj["password"]?.ToString() != password)
+                return Results.Json(new { success = false, reason = "incorrect_password" });
+        }
         else
         {
             return Results.Json(new { success = false, reason = "missing_authentication" });
         }
 
-        // ─── Get user's tier to know allowed fields ───
+        // ─── Load user tier ───
         var userNodeCheck = await GetJson($"{firebaseDb}/users/{userKey}.json");
         if (userNodeCheck == null)
             return Results.Json(new { success = false, reason = "user_not_found" });
@@ -1141,7 +1139,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
             _        => 5
         };
 
-        // ─── Find the client entry ───
+        // ─── Find client ───
         var clientsNode = await GetJson($"{firebaseDb}/client.json") as JsonObject;
         if (clientsNode == null)
             return Results.Json(new { success = false, reason = "no_client_data" });
@@ -1163,38 +1161,45 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
         if (targetClient == null)
             return Results.Json(new { success = false, reason = "client_not_found" });
 
-        // Make sure crypto-adr exists
-        var cryptoAdr = targetClient["crypto-adr"] as JsonObject;
-        if (cryptoAdr == null)
-        {
-            cryptoAdr = new JsonObject();
-            targetClient["crypto-adr"] = cryptoAdr;
-        }
+        // Ensure crypto-adr exists
+        var cryptoAdr = targetClient["crypto-adr"] as JsonObject ?? new JsonObject();
+        targetClient["crypto-adr"] = cryptoAdr;
 
-        // ─── Apply updates – only allowed fields ───
+        // ─── Apply updates ───
         var updatedFields = new List<string>();
 
         foreach (var prop in body)
         {
             string field = prop.Key;
-            if (field == "userkey" || field == "password" || field == "session") continue;
 
-            // Basic check: must be a string
+            // Skip auth fields
+            if (field is "userkey" or "password" or "session")
+                continue;
+
+            // Only allow string values
             if (prop.Value is JsonValue val && val.TryGetValue<string>(out var newAddress))
             {
-                if (!string.IsNullOrWhiteSpace(newAddress))
-                {
-                    // Optional: very basic validation (you can expand with regex later)
-                    bool looksValid = newAddress.Length >= 26 && newAddress.Length <= 100 &&
-                                     (newAddress.StartsWith("1") || newAddress.StartsWith("3") ||
-                                      newAddress.StartsWith("bc1") || newAddress.StartsWith("0x") ||
-                                      newAddress.StartsWith("T") || newAddress.StartsWith("lnbc"));
+                if (string.IsNullOrWhiteSpace(newAddress))
+                    continue;
 
-                    if (looksValid)
-                    {
-                        cryptoAdr[field] = newAddress;
-                        updatedFields.Add(field);
-                    }
+                // Very basic sanity check (length + common prefixes)
+                // → You should later replace this with proper regex per field
+                bool looksValid = newAddress.Length is >= 26 and <= 120 &&
+                                 (newAddress.StartsWith("1")   || newAddress.StartsWith("3")   ||
+                                  newAddress.StartsWith("bc1") || newAddress.StartsWith("0x")  ||
+                                  newAddress.StartsWith("T")   || newAddress.StartsWith("lnbc") ||
+                                  newAddress.StartsWith("G")   || newAddress.StartsWith("addr1") ||
+                                  newAddress.StartsWith("EQ")  || newAddress.StartsWith("UQ"));
+
+                if (looksValid)
+                {
+                    cryptoAdr[field] = newAddress;
+                    updatedFields.Add(field);
+                }
+                else
+                {
+                    // Optional: log invalid attempt
+                    Console.WriteLine($"Invalid crypto address format for field {field}: {newAddress}");
                 }
             }
         }
@@ -1202,7 +1207,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
         if (updatedFields.Count == 0)
             return Results.Json(new { success = false, reason = "no_valid_fields_updated" });
 
-        // Save back
+        // ─── Save ───
         await PutJson($"{firebaseDb}/client/{clientKeyFound}.json", targetClient);
 
         return Results.Json(new
@@ -1214,6 +1219,7 @@ app.MapPost("/raven/update-crypto", async (HttpContext ctx) =>
     }
     catch (Exception ex)
     {
+        Console.WriteLine($"Error in update-crypto: {ex}");
         return Results.Json(new { success = false, error = ex.Message });
     }
 });
